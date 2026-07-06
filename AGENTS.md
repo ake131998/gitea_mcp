@@ -40,7 +40,7 @@ Violation Signals (each pattern below indicates a breach of the rules above):
 
 ### 1.4 Verification
 
-- After every TypeScript change, run the checks in order and they MUST pass: `make lint` FIRST, then `make build`, then `make test` per §3, then a runtime smoke run of the built `dist/`.
+- After every TypeScript change, run the checks in order and they MUST pass: `make lint` FIRST, then `make build`, then `make test` per §3, then a runtime smoke run of the built `dist/`. (`make verify`, the CI gate, also runs `make scan` — the gitleaks secret scan — before lint; locally `make scan` MAY be skipped when gitleaks is not installed, but CI enforces it on every PR.)
 - **`make lint` MUST be a real emit, never `--noEmit`.** `tsc --noEmit` is forbidden for verification because it silently masks declaration-emit errors (e.g. TS4023/TS4058 private-type leakage through public APIs), emit-stage config problems (outDir/declarationDir legality, source-map paths), and JS-output issues. `make lint` runs `tsc -p tsconfig.json`, which emits declarations + JS to the gitignored throwaway `.dist/typecheck/`; this surfaces every error `--noEmit` would hide.
 - **`make lint` MUST cover tests.** `tsconfig.json` includes all of `src/` (including `src/__tests__`) with `types: ["node"]`. Excluding tests from lint — or any other trick that makes a check skip the affected files — is a bypass, not a pass, and is forbidden.
 - `make build` = `tsc -p tsconfig.build.json` (emits non-test `src/` → `dist/`, with declarations + source maps) then `npm run build:assets` (`scripts/copy-assets.mjs` copies `src/assets/**` → `dist/assets/**`).
@@ -143,7 +143,7 @@ Violation Signals (each pattern below indicates a breach of the rules above):
 
 - MUST NOT commit secrets, credentials, API keys, tokens, or private data to the repository.
 - MUST NOT hardcode secrets in source code or config; secrets MUST be read from the environment (`GITEA_TOKEN`, `NPM_TOKEN`) and MUST stay outside version control (respect `.gitignore`).
-- The Gitea token is sent ONLY as an `Authorization: token <token>` header inside `GiteaClient.request`; it MUST NOT be logged, interpolated into error messages returned to the MCP client, or echoed in tool output.
+- The Gitea credential (token or credential-store secret) is sent ONLY inside the `Authorization` header of `GiteaClient.request`, in one of two schemes: `Authorization: token <token>` (for `[gitea]` config tokens and `GITEA_TOKEN`) or `Authorization: Basic base64(<username>:<secret>)` (for git credential-store entries, whose `password` field may be an account password or a PAT). The scheme is chosen by the credential state machine in `credentials.ts` / `gitea-client.ts` (see `docs/architecture.md` §5.3). It MUST NOT be logged, interpolated into error messages returned to the MCP client, or echoed in tool output; the `gitea_status` diagnostic tool exposes only `secretPresent: boolean` and a masked username.
 - If a committed secret is discovered, treat it as exposed and rotate it; do not merely delete the line.
 
 Violation Signals (each pattern below indicates a breach of the rules above):
@@ -171,6 +171,6 @@ This index points to authoritative documents that live outside AGENTS.md. It rec
 
 ### 5.3 Makefile / package.json
 
-- `Makefile` is the task entry point (`make lint|build|build-assets|assets|test|test-integration|smoke|dev|package|publish|clean|verify`); it MUST delegate to the `package.json` scripts rather than reimplementing commands.
+- `Makefile` is the task entry point (`make lint|build|build-assets|assets|test|test-integration|smoke|scan|dev|package|publish|clean|verify`); it MUST delegate to the `package.json` scripts rather than reimplementing commands.
 - `package.json` scripts are the canonical command definitions; `Makefile` targets are thin wrappers. When adding a script, add the matching `make` target.
 - `make publish` requires `NPM_TOKEN` and publishes `@amonstack/gitea-mcp` with `--access public`; it MUST NOT be run without explicit user instruction.
