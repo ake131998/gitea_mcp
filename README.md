@@ -356,11 +356,7 @@ the guide to adding a new tool — see [`docs/architecture.md`](docs/architectur
 
 ## Contributing
 
-Contributions are welcome!
-
-- Found a bug or have a feature idea? Please [open an issue](https://github.com/amonstack/gitea_mcp/issues).
-- Pull requests are gladly accepted. This repo follows [Conventional Commits](https://www.conventionalcommits.org/) and the workflow described in [`AGENTS.md`](AGENTS.md) — please skim it before your first PR.
-- For the module layout, dependency graph, and the guide to adding a new tool, see [`docs/architecture.md`](docs/architecture.md).
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on reporting bugs, suggesting features, and submitting pull requests.
 
 ## License
 

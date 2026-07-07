@@ -1,0 +1,42 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for gitea-mcp
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Please describe the problem and the solution you have in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the use case or pain point. Context is more valuable than a specific implementation.
+      placeholder: |
+        As a [user/developer], I want to ... so that ...
+        Currently I have to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: What solution would you like?
+      description: Describe the feature or tool you would like to see.
+      placeholder: |
+        A new MCP tool `search_milestones` that ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you are using now, or alternative approaches you have considered.
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: "Anything else: screenshots, links to related issues, etc."
