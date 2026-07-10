@@ -57,6 +57,18 @@ describe("GiteaClient", () => {
       client.listMyRepos();
       expect(lastCall(fetchMock).url).toBe("https://g.example/api/v1/user/repos");
     });
+
+    it("rejects a baseUrl with a non-http protocol", () => {
+      expect(() => new GiteaClient({ baseUrl: "file:///etc/passwd", token: "t" })).toThrow(
+        "must use http or https",
+      );
+    });
+
+    it("rejects an unparseable baseUrl", () => {
+      expect(() => new GiteaClient({ baseUrl: "not-a-url", token: "t" })).toThrow(
+        "Invalid Gitea baseUrl",
+      );
+    });
   });
 
   describe("request helper", () => {
