@@ -298,4 +298,22 @@ describe("resolve_repo handler", () => {
       registeredTools(server as never)["resolve_repo"].handler({ path: "/repo" }),
     ).rejects.toThrow("No parseable git remotes found");
   });
+
+  it("follows gitdir -> commondir when run inside a git worktree", async () => {
+    const files: Record<string, string> = {
+      "/wt/.git": "gitdir: /data/repo/.git/worktrees/wt\n",
+      "/data/repo/.git/worktrees/wt/commondir": "../..\n",
+      "/data/repo/.git/config": '[remote "origin"]\n\turl = git@gitea.example:owner/repo.git\n',
+    };
+    vi.mocked(readFile).mockImplementation(async (path) => files[String(path)]);
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g");
+    const result = await registeredTools(server as never)["resolve_repo"].handler({ path: "/wt" });
+    expect(readFile).toHaveBeenCalledWith("/data/repo/.git/config", "utf-8");
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      owner: "owner",
+      repo: "repo",
+      baseUrl: "https://gitea.example",
+    });
+  });
 });

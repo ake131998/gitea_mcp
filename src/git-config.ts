@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
   type CandidateCredential,
@@ -211,6 +211,56 @@ async function readOptionalFile(path: string): Promise<string> {
 }
 
 /**
+ * Resolve the absolute path to the git config file for a working directory,
+ * handling both normal repositories and linked working trees (`git worktree`).
+ *
+ * In a normal repo `<cwd>/.git` is a directory and config lives at
+ * `<cwd>/.git/config`. In a linked worktree `<cwd>/.git` is a FILE whose
+ * `gitdir: <path>` line points at a private per-worktree directory; that
+ * directory's `commondir` file (absolute, or relative to itself) points at the
+ * shared common directory where `config` actually lives. A submodule uses the
+ * same `gitdir:` pointer but has no `commondir`, so its config is read directly
+ * from the pointed-to directory.
+ *
+ * When no `.git` exists at all the conventional path is returned so the caller
+ * can treat the missing file as empty content.
+ */
+export async function resolveGitConfigPath(cwd: string): Promise<string> {
+  const dotGit = join(cwd, ".git");
+  const conventionalConfig = join(dotGit, "config");
+
+  // Read .git in a single operation to avoid a TOCTOU race: a separate
+  // stat + readFile would let the entry be swapped between check and use.
+  // EISDIR means .git is a directory (normal repo); ENOENT means absent.
+  let gitFile: string;
+  try {
+    gitFile = await readFile(dotGit, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EISDIR" || code === "ENOENT") return conventionalConfig;
+    throw err;
+  }
+
+  // .git is a file — parse the gitdir pointer (worktree / submodule).
+  const m = gitFile.match(/^gitdir:\s*(.+?)\s*$/m);
+  if (!m) return conventionalConfig;
+
+  const gitdir = isAbsolute(m[1]) ? m[1] : resolve(cwd, m[1]);
+
+  const commondirRaw = await readOptionalFile(join(gitdir, "commondir"));
+  const commondirTrimmed = commondirRaw.trim();
+  if (commondirTrimmed) {
+    const common = isAbsolute(commondirTrimmed)
+      ? commondirTrimmed
+      : resolve(gitdir, commondirTrimmed);
+    return join(common, "config");
+  }
+
+  // Submodule (gitdir without commondir): config lives in the gitdir itself.
+  return join(gitdir, "config");
+}
+
+/**
  * Build a `CandidateCredential` from a parsed credential-store entry.
  *
  * - `https://:pass@host` or `https://user:pass@host` → secret = pass,
@@ -271,7 +321,8 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
   const env = options.env ?? process.env;
   const envBaseUrl = env.GITEA_BASE_URL;
 
-  const gitConfigContent = await readOptionalFile(join(cwd, ".git", "config"));
+  const gitConfigPath = await resolveGitConfigPath(cwd);
+  const gitConfigContent = await readOptionalFile(gitConfigPath);
   const parsedRemotes = parseRemotes(gitConfigContent);
   const selected = selectRemote(parsedRemotes);
 
