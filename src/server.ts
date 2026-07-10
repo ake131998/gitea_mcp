@@ -34,7 +34,7 @@ import {
   RemoveTopicSchema,
   GiteaStatusSchema,
 } from "./tools.js";
-import { parseRemotes, selectRemote } from "./git-config.js";
+import { parseRemotes, selectRemote, resolveGitConfigPath } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
 import { readFile } from "node:fs/promises";
@@ -542,7 +542,7 @@ export async function createServer(
     },
     async (input) => {
       const dir = input.path || process.cwd();
-      const gitConfigPath = join(dir, ".git", "config");
+      const gitConfigPath = await resolveGitConfigPath(dir);
       const content = await readFile(gitConfigPath, "utf-8");
       const parsed = parseRemotes(content);
       if (parsed.length === 0) {

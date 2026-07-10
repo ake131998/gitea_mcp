@@ -212,7 +212,21 @@ export class GiteaClient {
   private candidates: CandidateCredential[];
 
   constructor(config: GiteaConfig) {
-    this.baseUrl = config.baseUrl.replace(/\/+$/, "");
+    // baseUrl originates from git config files and flows into outbound fetch
+    // calls — validate it is a well-formed HTTP(S) URL before use.
+    let protocol: string;
+    try {
+      protocol = new URL(config.baseUrl).protocol;
+    } catch {
+      throw new Error(`Invalid Gitea baseUrl: ${config.baseUrl}`);
+    }
+    if (protocol !== "http:" && protocol !== "https:") {
+      throw new Error(`Gitea baseUrl must use http or https, got: ${protocol}`);
+    }
+    // Strip trailing slashes without regex (avoids ReDoS-class heuristic).
+    let baseUrl = config.baseUrl;
+    while (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+    this.baseUrl = baseUrl;
     if (config.candidates && config.candidates.length > 0) {
       // Defensive copy so external mutation cannot desync the state machine.
       this.candidates = config.candidates.map((c) => ({ ...c }));
