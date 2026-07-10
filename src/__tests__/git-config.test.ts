@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
+vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), stat: vi.fn() }));
 
 import {
   parseGitRemoteUrl,
@@ -12,6 +12,7 @@ import {
   parseGitCredentials,
   defaultCredentialsPaths,
   discoverConfig,
+  resolveGitConfigPath,
 } from "../git-config.js";
 
 function mockFiles(files: Record<string, string>): void {
@@ -266,15 +267,99 @@ describe("defaultCredentialsPaths", () => {
   });
 });
 
+describe("resolveGitConfigPath", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the conventional .git/config when .git is a directory", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never);
+    await expect(resolveGitConfigPath("/repo")).resolves.toBe("/repo/.git/config");
+    expect(stat).toHaveBeenCalledWith("/repo/.git");
+  });
+
+  it("returns the conventional path when .git does not exist", async () => {
+    const err = new Error("ENOENT") as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    vi.mocked(stat).mockRejectedValue(err);
+    await expect(resolveGitConfigPath("/repo")).resolves.toBe("/repo/.git/config");
+  });
+
+  it("follows gitdir -> commondir (relative) to the shared config", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({
+      "/wt/.git": "gitdir: /data/repo/.git/worktrees/wt\n",
+      "/data/repo/.git/worktrees/wt/commondir": "../..\n",
+    });
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/data/repo/.git/config");
+  });
+
+  it("follows an absolute commondir to the shared config", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({
+      "/wt/.git": "gitdir: /private/wt\n",
+      "/private/wt/commondir": "/data/repo/.git\n",
+    });
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/data/repo/.git/config");
+  });
+
+  it("reads config directly from the gitdir when no commondir exists (submodule)", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({
+      "/sub/.git": "gitdir: /data/repo/.git/modules/sub\n",
+    });
+    await expect(resolveGitConfigPath("/sub")).resolves.toBe("/data/repo/.git/modules/sub/config");
+  });
+
+  it("resolves a relative gitdir pointer against the cwd", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({
+      "/work/sub/.git": "gitdir: ../.git/worktrees/sub\n",
+      "/work/.git/worktrees/sub/commondir": "../..\n",
+    });
+    await expect(resolveGitConfigPath("/work/sub")).resolves.toBe("/work/.git/config");
+  });
+
+  it("falls back to the conventional path when the .git file has no gitdir line", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({ "/wt/.git": "garbage\n" });
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/wt/.git/config");
+  });
+
+  it("rethrows non-ENOENT stat errors", async () => {
+    const err = new Error("EACCES") as NodeJS.ErrnoException;
+    err.code = "EACCES";
+    vi.mocked(stat).mockRejectedValue(err);
+    await expect(resolveGitConfigPath("/repo")).rejects.toThrow("EACCES");
+  });
+});
+
 describe("discoverConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never);
   });
 
   it("returns null when there is no .git/config and no GITEA_BASE_URL", async () => {
     mockFiles({});
     const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
     expect(cfg).toBeNull();
+  });
+
+  it("reads config from the common dir when running inside a git worktree", async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => false } as never);
+    mockFiles({
+      "/wt/.git": "gitdir: /data/repo/.git/worktrees/wt\n",
+      "/data/repo/.git/worktrees/wt/commondir": "../..\n",
+      "/data/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
+    });
+    const cfg = await discoverConfig({ cwd: "/wt", env: {}, credentialsPaths: ["/cred"] });
+    expect(cfg).toMatchObject({
+      baseUrl: "https://gitea.example",
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      remote: "origin",
+    });
   });
 
   it("derives baseUrl/owner/repo from the upstream remote (preferred over origin)", async () => {
