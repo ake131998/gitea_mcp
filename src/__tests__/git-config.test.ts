@@ -92,6 +92,15 @@ describe("parseGitRemoteUrl", () => {
     expect(parseGitRemoteUrl("git@gitea.example:owner/repo.git")!.remote).toBe("origin");
   });
 
+  it("strips unsafe characters from owner and repo segments", () => {
+    const r = parseGitRemoteUrl("https://gitea.example/o!wn/re^po.git");
+    expect(r).toMatchObject({ owner: "own", repo: "repo" });
+  });
+
+  it("returns null when owner segment has no safe characters", () => {
+    expect(parseGitRemoteUrl("https://gitea.example/!!!/repo.git")).toBeNull();
+  });
+
   it("returns null for an unparseable url", () => {
     expect(parseGitRemoteUrl("not-a-valid-url")).toBeNull();
   });
