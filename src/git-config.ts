@@ -49,6 +49,18 @@ export interface ParsedCredentialEntry {
 }
 
 /**
+ * Sanitize an owner/repo segment extracted from file content by retaining
+ * only characters valid in Gitea repository names (alphanumeric, dot, dash,
+ * underscore). Returns null when nothing remains, signalling the caller to
+ * discard the remote. This breaks the CodeQL file-access-to-http taint chain
+ * at the source rather than at the fetch call site.
+ */
+function sanitizeSegment(value: string): string | null {
+  const sanitized = value.replace(/[^a-zA-Z0-9._-]/g, "");
+  return sanitized || null;
+}
+
+/**
  * Parse a git remote URL into host/baseUrl/owner/repo. Accepts `ssh://`, the
  * scp-like `user@host:owner/repo` form, and `http(s)://`. SSH URLs derive an
  * `https://` baseUrl because the Gitea API is served over HTTP(S); a non-standard
@@ -60,20 +72,29 @@ export function parseGitRemoteUrl(url: string, remote = "origin"): ParsedRemote 
   let m = u.match(/^ssh:\/\/(?:[^@/\s]+@)?([^:/\s]+)(?::\d+)?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
   if (m) {
     const [, host, owner, repo] = m;
-    return { remote, url: u, host, baseUrl: `https://${host}`, owner, repo };
+    const so = sanitizeSegment(owner);
+    const sr = sanitizeSegment(repo);
+    if (!so || !sr) return null;
+    return { remote, url: u, host, baseUrl: `https://${host}`, owner: so, repo: sr };
   }
 
   m = u.match(/^(https?:)\/\/(?:[^@/\s]+@)?([^:/\s]+)(?::(\d+))?\/([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
   if (m) {
     const [, scheme, host, port, owner, repo] = m;
+    const so = sanitizeSegment(owner);
+    const sr = sanitizeSegment(repo);
+    if (!so || !sr) return null;
     const baseUrl = port ? `${scheme}//${host}:${port}` : `${scheme}//${host}`;
-    return { remote, url: u, host: port ? `${host}:${port}` : host, baseUrl, owner, repo };
+    return { remote, url: u, host: port ? `${host}:${port}` : host, baseUrl, owner: so, repo: sr };
   }
 
   m = u.match(/^(?:[^@/\s]+@)?([^@:/\s]+):([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
   if (m) {
     const [, host, owner, repo] = m;
-    return { remote, url: u, host, baseUrl: `https://${host}`, owner, repo };
+    const so = sanitizeSegment(owner);
+    const sr = sanitizeSegment(repo);
+    if (!so || !sr) return null;
+    return { remote, url: u, host, baseUrl: `https://${host}`, owner: so, repo: sr };
   }
 
   return null;
