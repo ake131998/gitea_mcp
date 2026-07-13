@@ -44,6 +44,22 @@ Quick recipes for common goals. Always resolve owner/repo first (explicit args,
   `replace_topics({ topics: ["go","mcp"] })` — REPLACES the whole set; pass `[]` to
   clear. Confirm with the user before replacing.
 
+## Pull requests
+- List a repo's open PRs → `list_pull_requests({ state: "open", page: 1, limit: 50 })`,
+  page until a page returns < 50. Filter by `labels` (names) or `sort`.
+- PRs across repos by keyword → `search_issues({ type: "pulls", query })`.
+- One PR's full picture → `get_pull_request` (check `mergeable`, `merged`, `draft`),
+  then `list_pull_commits` + `list_pull_files` for scope, then `list_comments` for
+  the review thread (PR #N == Issue #N — comments are shared; one default page).
+- Create a PR → `create_pull_request({ title, head, base, body? })`. Prefix title
+  with `WIP:` while in progress. For forks use `"owner:branch"` in `head`. Link an
+  issue with `Closes #123` in the body.
+- Edit a PR → `update_pull_request({ index, title?, body?, state? })`. `state:
+  "closed"` closes WITHOUT merging. Remove the `WIP:` prefix to mark ready.
+- Merge a PR (IRREVERSIBLE) → `is_pull_merged` first; `get_pull_request` to confirm
+  `mergeable: true`; get user approval; then `merge_pull_request({ index, Do })`.
+  `Do`: `merge` / `squash` / `rebase` / `rebase-merge`.
+
 ## Pagination pattern (all list tools)
 ```
 page = 1

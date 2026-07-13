@@ -1,8 +1,8 @@
 # Gitea MCP — usage strategy
 
-You manage Gitea issues, comments, labels, milestones, and repository topics through this MCP server.
-Every tool returns Gitea's JSON verbatim as text. Follow these rules to use them
-correctly.
+You manage Gitea issues, comments, labels, milestones, repository topics, and
+pull requests through this MCP server. Every tool returns Gitea's JSON verbatim
+as text. Follow these rules to use them correctly.
 
 ## Config is auto-discovered from git (env vars optional)
 
@@ -58,9 +58,26 @@ These are irreversible on most Gitea instances (no trash/recycle):
 - `delete_issue`, `delete_label`, `delete_milestone`, `delete_comment`
 - `clear_issue_labels`, `replace_issue_labels` (replaces the ENTIRE label set)
 - `replace_topics` (replaces the ENTIRE topic set; pass `[]` to clear all topics)
+- `merge_pull_request` (IRREVERSIBLE — merging is final; confirm the index and strategy)
 
 Confirm the target id/index and scope with the user before calling. For labels,
 `replace_issue_labels` overwrites — read current labels first if any must survive.
+
+## Pull requests — PR is an Issue superset
+
+A pull request shares its number space with issues (PR #N == Issue #N). Comments,
+labels, and milestones on a PR reuse the **issue** tools — pass the PR `index` to
+`list_comments`, `create_comment`, `add_issue_labels`, etc. Only PR-specific
+operations (create/update/merge, commits, files, merge-check) use the
+`*_pull_request` / `list_pull_*` tools.
+
+- WIP / draft: Gitea blocks merges when the PR title starts with `WIP:`, `[WIP]`,
+  or `Draft:`. Toggle the prefix via `update_pull_request({ title })`.
+- Close WITHOUT merging: `update_pull_request({ state: "closed" })` — the commits
+  stay on the head branch.
+- Merge: `merge_pull_request` is IRREVERSIBLE. Check `is_pull_merged` first, confirm
+  `mergeable: true` via `get_pull_request`, and get explicit user approval before
+  choosing a `Do` strategy (merge / squash / rebase / rebase-merge).
 
 ## Search vs list
 

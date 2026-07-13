@@ -22,8 +22,9 @@ requests against the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.2
 ┌───────────────┐     stdio      ┌──────────────────────────────┐     HTTPS     ┌──────────────────────┐
 │  MCP Client   │ ◄──────────► │  McpServer (server.ts)       │ ◄──────────► │  Gitea /api/v1       │
 │  (Claude,     │   JSON-RPC   │   ├─ tools.ts (Zod schemas)  │   token/basic │  (issues, labels,    │
-│   opencode…)  │              │   └─ GiteaClient.request<T>  │   auth        │   milestones, topics,…)│
-└───────────────┘              └──────────────────────────────┘               └──────────────────────┘
+│   opencode…)  │              │   └─ GiteaClient.request<T>  │   auth        │   milestones, topics,│
+└───────────────┘              └──────────────────────────────┘               │   pull requests,…)  │
+                                                                              └──────────────────────┘
         ▲
         │ env (all optional overrides): GITEA_BASE_URL, GITEA_TOKEN, GITEA_DEFAULT_OWNER, GITEA_DEFAULT_REPO
    cli.ts (process entry) ──► git-config.ts (discoverConfig: .git/config + credential store + env)
@@ -252,6 +253,12 @@ Adding a tool is a coordinated change across four places:
 
 This keeps schemas, registrations, client methods, and documentation in sync.
 
+**Pull request note:** a PR shares its number space with issues (PR #N == Issue
+#N), so comments, labels, and milestones on a PR reuse the **issue** tools
+(`list_comments`, `add_issue_labels`, …) — they are NOT re-implemented for PRs.
+Only PR-specific operations (create/update/merge, list commits/files, merge-check)
+get their own schemas, client methods, tool registrations, and README rows.
+
 ### 5.5 Guidance Layer (instructions / prompts / resources / skill)
 
 Beyond tools, the server ships usage guidance through four channels, authored as
@@ -269,7 +276,11 @@ Coordination rule (parallel to §5.4): guidance is a coordinated change across
 `server.ts` (the registration / load site) + the matching `assets/*.md` (the content)
 + `README.md` / `README.zh-CN.md` (the user-facing description). Descriptions,
 prompts, resources, the instructions digest, and the action skills MUST stay consistent
-with the actual tool behavior.
+with the actual tool behavior. The pull-request guidance mirrors the issue guidance
+symmetrically: for every PR tool group there is a matching action skill
+(`gitea-find-pulls`, `gitea-create-pull`, `gitea-update-pull`, `gitea-merge-pull`,
+`gitea-summarize-pull`), a prompt (`triage_pull_requests`, `summarize_pull_request`),
+and a tool-cookbook / field-reference / instructions entry.
 
 ## 6. Environment Contract
 
