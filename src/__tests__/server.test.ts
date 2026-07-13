@@ -255,6 +255,16 @@ describe("tool handlers", () => {
     expect(JSON.parse(result.content[0].text)).toEqual(pull);
   });
 
+  it("get_pull_request forwards owner/repo/index and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const pull = { number: 42, title: "T" };
+    mockClient.getPullRequest.mockResolvedValue(pull);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["get_pull_request"].handler({ index: 42 });
+    expect(mockClient.getPullRequest).toHaveBeenCalledWith("o", "r", 42);
+    expect(JSON.parse(result.content[0].text)).toEqual(pull);
+  });
+
   it("update_pull_request spreads owner/repo into the update params", async () => {
     const { createServer } = await import("../server.js");
     mockClient.updatePullRequest.mockResolvedValue({ number: 3 });
