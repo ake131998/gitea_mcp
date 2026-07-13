@@ -17,6 +17,7 @@ const CLIENT_METHODS = [
   "listMyRepos",
   "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
   "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
+  "listActionRuns", "getActionRun", "cancelActionRun", "rerunActionRun", "rerunActionRunFailedJobs",
 ] as const;
 
 type MockClient = Record<string, ReturnType<typeof vi.fn>>;
@@ -97,13 +98,16 @@ describe("enriched tool descriptions", () => {
     expect(d("merge_pull_request")).toContain("IRREVERSIBLE");
     expect(d("update_pull_request")).toContain("REPLACE");
     expect(d("list_pull_requests").toLowerCase()).toContain("page");
+    expect(d("list_action_runs").toLowerCase()).toContain("page");
+    expect(d("cancel_action_run")).toContain("DESTRUCTIVE");
+    expect(d("rerun_action_run").toLowerCase()).toContain("confirm");
   });
 });
 
 describe("workflow prompts", () => {
   const PROMPTS = [
     "triage_issues", "summarize_issue", "audit_labels", "milestone_report",
-    "triage_pull_requests", "summarize_pull_request",
+    "triage_pull_requests", "summarize_pull_request", "triage_action_runs",
   ];
 
   it("registers all prompts with descriptions", async () => {
@@ -127,6 +131,7 @@ describe("workflow prompts", () => {
       ["milestone_report", {}],
       ["triage_pull_requests", {}],
       ["summarize_pull_request", { index: 9 }],
+      ["triage_action_runs", {}],
     ];
     for (const [name, args] of cases) {
       const result = (await prompts[name].callback(args, {})) as {

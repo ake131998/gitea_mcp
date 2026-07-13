@@ -311,6 +311,20 @@ gitea-mcp
 > Comments, labels, and milestones on a PR reuse the **issue** tools — pass the PR
 > number as the `index`. Only PR-specific operations use the tools above.
 
+### Actions
+
+| Tool | Description |
+|------|-------------|
+| `list_action_runs` | List Gitea Actions workflow runs (filter by `status`, `branch`, `event`, `actor`, `head_sha`) |
+| `get_action_run` | Get a single workflow run by `runId` — check status before cancel/rerun |
+| `cancel_action_run` | Cancel an **active** run (queued, in_progress, running) — partially destructive |
+| `rerun_action_run` | Rerun an entire **completed** run — requires Gitea 1.26.0+ |
+| `rerun_action_run_failed_jobs` | Rerun only the failed jobs of a completed run — requires Gitea 1.26.0+ |
+
+> **Note:** cancel only works on active runs; rerun only works on completed runs.
+> Always call `get_action_run` first to verify the current status, and confirm the
+> `runId` with the user before cancelling or rerunning.
+
 ### Repository Helpers
 
 | Tool | Description |
@@ -330,8 +344,9 @@ through three channels:
   label ID-vs-name, destructive scope) and a minimal usage example.
 - **Prompts & resources** — workflow templates (`triage_issues`,
   `summarize_issue`, `triage_pull_requests`, `summarize_pull_request`,
-  `audit_labels`, `milestone_report`) and on-demand reference docs (field
-  reference, label guide, tool cookbook) for clients that surface them.
+  `audit_labels`, `milestone_report`, `triage_action_runs`) and on-demand
+  reference docs (field reference, label guide, tool cookbook) for clients that
+  surface them.
 
 ### Action skills
 
@@ -357,6 +372,9 @@ say, delete instructions while creating). Install them with the
 | `gitea-update-pull` | editing fields, closing without merging, reopening, WIP toggle |
 | `gitea-merge-pull` | merging a pull request (after mergeability check + user confirmation) |
 | `gitea-summarize-pull` | reading and summarizing a pull request for review |
+| `gitea-find-actions` | discovering / reading Actions workflow runs |
+| `gitea-cancel-action` | cancelling an active run (after status check + user confirmation) |
+| `gitea-rerun-action` | rerunning a completed run — full or failed jobs only |
 
 Each skill is a short, AI-facing action flow (purpose, when to use, when not to,
 rules, and what to check first). The create, comment, and milestone skills also

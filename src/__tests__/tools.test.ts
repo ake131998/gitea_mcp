@@ -13,6 +13,11 @@ import {
   ReplaceTopicsSchema,
   AddTopicSchema,
   RemoveTopicSchema,
+  ListActionRunsSchema,
+  GetActionRunSchema,
+  CancelActionRunSchema,
+  RerunActionRunSchema,
+  RerunActionRunFailedJobsSchema,
 } from "../tools.js";
 
 describe("ListIssuesSchema", () => {
@@ -209,5 +214,78 @@ describe("RemoveTopicSchema", () => {
   it("accepts a valid topic name", () => {
     const result = RemoveTopicSchema.parse({ topic: "mcp" });
     expect(result.topic).toBe("mcp");
+  });
+});
+
+// ── Actions ──
+
+describe("ListActionRunsSchema", () => {
+  it("accepts empty input", () => {
+    const result = ListActionRunsSchema.safeParse({});
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts all optional filters", () => {
+    const result = ListActionRunsSchema.parse({
+      owner: "o",
+      repo: "r",
+      branch: "main",
+      event: "push",
+      status: "failure",
+      actor: "alice",
+      head_sha: "abc123",
+      page: 2,
+      limit: 50,
+    });
+    expect(result.status).toBe("failure");
+    expect(result.actor).toBe("alice");
+  });
+});
+
+describe("GetActionRunSchema", () => {
+  it("requires runId", () => {
+    const result = GetActionRunSchema.safeParse({ owner: "a", repo: "b" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts runId only", () => {
+    const result = GetActionRunSchema.parse({ runId: 42 });
+    expect(result.runId).toBe(42);
+  });
+});
+
+describe("CancelActionRunSchema", () => {
+  it("requires runId", () => {
+    const result = CancelActionRunSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts runId with owner/repo", () => {
+    const result = CancelActionRunSchema.parse({ owner: "o", repo: "r", runId: 7 });
+    expect(result.runId).toBe(7);
+  });
+});
+
+describe("RerunActionRunSchema", () => {
+  it("requires runId", () => {
+    const result = RerunActionRunSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts runId only", () => {
+    const result = RerunActionRunSchema.parse({ runId: 99 });
+    expect(result.runId).toBe(99);
+  });
+});
+
+describe("RerunActionRunFailedJobsSchema", () => {
+  it("requires runId", () => {
+    const result = RerunActionRunFailedJobsSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts runId only", () => {
+    const result = RerunActionRunFailedJobsSchema.parse({ runId: 5 });
+    expect(result.runId).toBe(5);
   });
 });

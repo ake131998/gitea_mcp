@@ -16,7 +16,10 @@ function buildResponse(body: unknown, status = 200, statusText = "OK"): FakeResp
     status,
     statusText,
     json: async () => body,
-    text: async () => (typeof body === "string" ? body : JSON.stringify(body ?? "")),
+    text: async () => {
+      if (body === undefined) return "";
+      return typeof body === "string" ? body : JSON.stringify(body);
+    },
   };
 }
 
@@ -582,6 +585,82 @@ describe("GiteaClient", () => {
       const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
       await client.listPullFiles("o", "r", 5);
       expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/5/files");
+    });
+  });
+
+  describe("actions", () => {
+    it("listActionRuns builds query from filters", async () => {
+      const fetchMock = stubFetch(buildResponse({ workflow_runs: [], count: 0 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listActionRuns({
+        owner: "o", repo: "r", branch: "main", event: "push", status: "failure",
+        actor: "alice", head_sha: "abc123", page: 1, limit: 20,
+      });
+      expect(lastCall(fetchMock).url).toBe(
+        "https://g/api/v1/repos/o/r/actions/runs?branch=main&event=push&status=failure&created_by=alice&head_sha=abc123&page=1&limit=20",
+      );
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+    });
+
+    it("listActionRuns omits query when no filters", async () => {
+      const fetchMock = stubFetch(buildResponse({ workflow_runs: [], count: 0 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listActionRuns({ owner: "o", repo: "r" });
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/actions/runs");
+    });
+
+    it("getActionRun builds the run path", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 42, status: "success" }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.getActionRun("o", "r", 42);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/actions/runs/42");
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+      expect(result).toEqual({ id: 42, status: "success" });
+    });
+
+    it("cancelActionRun posts to the cancel endpoint and resolves void on 204", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 204));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.cancelActionRun("o", "r", 7);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/actions/runs/7/cancel");
+      expect(init.method).toBe("POST");
+      expect(result).toBeUndefined();
+    });
+
+    it("rerunActionRun posts to the rerun endpoint and returns the run body", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 100, status: "queued" }, 201));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.rerunActionRun("o", "r", 9);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/actions/runs/9/rerun");
+      expect(init.method).toBe("POST");
+      expect(result).toEqual({ id: 100, status: "queued" });
+    });
+
+    it("rerunActionRun resolves undefined on 201 with empty body", async () => {
+      stubFetch(buildResponse(undefined, 201));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.rerunActionRun("o", "r", 9);
+      expect(result).toBeUndefined();
+    });
+
+    it("rerunActionRunFailedJobs posts to the rerun-failed-jobs endpoint", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 201));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.rerunActionRunFailedJobs("o", "r", 12);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/actions/runs/12/rerun-failed-jobs");
+      expect(init.method).toBe("POST");
+      expect(result).toBeUndefined();
+    });
+
+    it("cancelActionRun throws with status and body on error", async () => {
+      stubFetch(buildResponse("conflict", 409, "Conflict"));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await expect(client.cancelActionRun("o", "r", 7)).rejects.toThrow(
+        "Gitea API error (409): conflict",
+      );
     });
   });
 
