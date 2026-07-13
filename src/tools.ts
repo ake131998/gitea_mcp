@@ -313,3 +313,49 @@ export const ListPullFilesSchema = z.object({
   page: z.number().int().min(1).optional().describe("Page number"),
   limit: z.number().int().min(1).max(100).optional().describe("Files per page"),
 });
+
+// ── Actions ──
+
+export const ListActionRunsSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  branch: z.string().optional().describe("Filter by head branch name"),
+  event: z
+    .string()
+    .optional()
+    .describe("Filter by trigger event (e.g. push, pull_request, schedule)"),
+  status: z
+    .string()
+    .optional()
+    .describe(
+      "Filter by run status: pending, queued, waiting, in_progress, running, success, failure, skipped, cancelled",
+    ),
+  actor: z.string().optional().describe("Filter by the user who triggered the run (username)"),
+  head_sha: z.string().optional().describe("Filter by the head commit SHA"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Runs per page"),
+});
+
+export const GetActionRunSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  runId: z.number().int().min(1).describe("Action workflow run ID"),
+});
+
+export const CancelActionRunSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  runId: z.number().int().min(1).describe("Action workflow run ID"),
+});
+
+export const RerunActionRunSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  runId: z.number().int().min(1).describe("Action workflow run ID"),
+});
+
+export const RerunActionRunFailedJobsSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  runId: z.number().int().min(1).describe("Action workflow run ID"),
+});

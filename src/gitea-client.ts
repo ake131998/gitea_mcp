@@ -306,6 +306,46 @@ export interface MergePullRequestParams {
   SHA?: string;
 }
 
+// ── Actions ──
+
+export interface ActionWorkflowRun {
+  id: number;
+  display_title?: string;
+  event?: string;
+  head_branch?: string;
+  head_sha?: string;
+  path?: string;
+  run_attempt?: number;
+  run_number?: number;
+  status: string;
+  conclusion?: string;
+  url?: string;
+  html_url?: string;
+  started_at?: string;
+  completed_at?: string;
+  actor?: User;
+  trigger_actor?: User;
+  repository?: Repository;
+  head_repository?: Repository;
+}
+
+export interface ActionWorkflowRunsResponse {
+  workflow_runs: ActionWorkflowRun[];
+  count: number;
+}
+
+export interface ListActionRunsParams {
+  owner: string;
+  repo: string;
+  branch?: string;
+  event?: string;
+  status?: string;
+  actor?: string;
+  head_sha?: string;
+  page?: number;
+  limit?: number;
+}
+
 export class GiteaClient {
   private baseUrl: string;
   private candidates: CandidateCredential[];
@@ -393,7 +433,11 @@ export class GiteaClient {
       return undefined as T;
     }
 
-    return response.json() as Promise<T>;
+    const text = await response.text();
+    if (!text) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 
   /**
@@ -824,5 +868,42 @@ export class GiteaClient {
     const query = searchParams.toString();
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}/files${query ? `?${query}` : ""}`;
     return this.request<PullFile[]>("GET", path);
+  }
+
+  // ── Actions ──
+
+  async listActionRuns(params: ListActionRunsParams): Promise<ActionWorkflowRunsResponse> {
+    const searchParams = new URLSearchParams();
+    if (params.branch) searchParams.set("branch", params.branch);
+    if (params.event) searchParams.set("event", params.event);
+    if (params.status) searchParams.set("status", params.status);
+    if (params.actor) searchParams.set("created_by", params.actor);
+    if (params.head_sha) searchParams.set("head_sha", params.head_sha);
+    if (params.page) searchParams.set("page", String(params.page));
+    if (params.limit) searchParams.set("limit", String(params.limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/actions/runs${query ? `?${query}` : ""}`;
+    return this.request<ActionWorkflowRunsResponse>("GET", path);
+  }
+
+  async getActionRun(owner: string, repo: string, runId: number): Promise<ActionWorkflowRun> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`;
+    return this.request<ActionWorkflowRun>("GET", path);
+  }
+
+  async cancelActionRun(owner: string, repo: string, runId: number): Promise<void> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/cancel`;
+    return this.request<void>("POST", path);
+  }
+
+  async rerunActionRun(owner: string, repo: string, runId: number): Promise<ActionWorkflowRun | undefined> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun`;
+    return this.request<ActionWorkflowRun | undefined>("POST", path);
+  }
+
+  async rerunActionRunFailedJobs(owner: string, repo: string, runId: number): Promise<void> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun-failed-jobs`;
+    return this.request<void>("POST", path);
   }
 }

@@ -41,6 +41,11 @@ import {
   IsPullMergedSchema,
   ListPullCommitsSchema,
   ListPullFilesSchema,
+  ListActionRunsSchema,
+  GetActionRunSchema,
+  CancelActionRunSchema,
+  RerunActionRunSchema,
+  RerunActionRunFailedJobsSchema,
 } from "./tools.js";
 import { parseRemotes, selectRemote, resolveGitConfigPath } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
@@ -669,6 +674,88 @@ export async function createServer(
     },
   );
 
+  // ── Actions ──
+
+  server.registerTool(
+    "list_action_runs",
+    {
+      description:
+        "List Gitea Actions workflow runs in one repository. Paginated: page is 1-based, limit <= 100; keep paging until a page returns fewer than `limit`. Filters: branch, event (push, pull_request, schedule, etc.), status (pending, queued, waiting, in_progress, running, success, failure, skipped, cancelled), actor (username that triggered the run), head_sha. The response is a wrapper object { workflow_runs: [...], count: number } — the runs live under the `workflow_runs` key, NOT at the top level. Use this to find a run's `id` before calling get_action_run, cancel_action_run, or rerun_action_run.",
+      inputSchema: ListActionRunsSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const runs = await client.listActionRuns({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(runs, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_action_run",
+    {
+      description:
+        "Fetch one Actions workflow run by its `runId` (the numeric run ID from list_action_runs or the Gitea web UI — NOT the workflow name or index). Returns the full run including status, conclusion, head_branch, head_sha, event, started_at, completed_at, and actor. Call this BEFORE cancel_action_run (to verify the run is still active) or rerun_action_run (to verify it has completed and is rerunnable).",
+      inputSchema: GetActionRunSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const run = await client.getActionRun(owner, repo, input.runId);
+      return {
+        content: [{ type: "text", text: JSON.stringify(run, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "cancel_action_run",
+    {
+      description:
+        "Cancel one Actions workflow run by `runId`. Only valid on runs that are still ACTIVE (status: queued, waiting, in_progress, running, pending) — cancelling an already-completed run returns an error. PARTIALLY DESTRUCTIVE: active jobs are killed and their partial results are discarded. ALWAYS call get_action_run first to confirm the run is still active, and confirm the runId with the user before cancelling. The run's conclusion becomes 'cancelled' after a successful cancel.",
+      inputSchema: CancelActionRunSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      await client.cancelActionRun(owner, repo, input.runId);
+      return {
+        content: [{ type: "text", text: `Action run #${input.runId} cancelled.` }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "rerun_action_run",
+    {
+      description:
+        "Rerun an entire Actions workflow run by `runId`. Only valid on runs that have COMPLETED (status: success, failure, cancelled, skipped) — rerunning an active run returns an error. Requires Gitea 1.26.0+. Creates a NEW run (incrementing run_attempt); the original run is not modified. ALWAYS call get_action_run first to confirm the run has completed, and confirm the runId with the user before rerunning. To rerun ONLY the failed jobs instead of the whole run, use rerun_action_run_failed_jobs.",
+      inputSchema: RerunActionRunSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const run = await client.rerunActionRun(owner, repo, input.runId);
+      return {
+        content: [{ type: "text", text: run ? JSON.stringify(run, null, 2) : `Action run #${input.runId} rerun started.` }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "rerun_action_run_failed_jobs",
+    {
+      description:
+        "Rerun ONLY the failed jobs of an Actions workflow run by `runId`. More efficient than rerun_action_run when most jobs succeeded and only a subset failed. Only valid on completed runs. Requires Gitea 1.26.0+. ALWAYS call get_action_run first to confirm the run has completed and has failed jobs (conclusion: failure), and confirm the runId with the user before rerunning.",
+      inputSchema: RerunActionRunFailedJobsSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      await client.rerunActionRunFailedJobs(owner, repo, input.runId);
+      return {
+        content: [{ type: "text", text: `Failed jobs rerun started for action run #${input.runId}.` }],
+      };
+    },
+  );
+
   // ── Helpers ──
 
   server.registerTool(
@@ -986,6 +1073,44 @@ export async function createServer(
       ].join("\n");
       return {
         description: `Summarize pull request ${target}`,
+        messages: [{ role: "user", content: { type: "text", text } }],
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "triage_action_runs",
+    {
+      title: "Triage Actions runs",
+      description:
+        "List recent Gitea Actions workflow runs in a repo, identify stuck/failed/running ones, and propose cancel or rerun actions. Returns an instruction the model executes via the tools.",
+      argsSchema: {
+        owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+        repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+        status: z
+          .string()
+          .optional()
+          .describe("Filter by run status (default: no filter, lists all recent runs)"),
+      },
+    },
+    async ({ owner, repo, status }) => {
+      const target = `${owner ?? "<GITEA_DEFAULT_OWNER>"}/${repo ?? "<GITEA_DEFAULT_REPO>"}`;
+      const st = status ?? "all";
+      const text = [
+        `Triage Gitea Actions workflow runs in repository ${target}.`,
+        "",
+        "Steps:",
+        `1. Call list_action_runs({ ${status ? `status: "${st}"` : ""} page: 1, limit: 50 }). Page forward while a page returns exactly 50.`,
+        "2. For each run, note: id, display_title, event, head_branch, status, conclusion, started_at, actor.login.",
+        "3. Categorize runs: RUNNING (in_progress/queued/waiting — active), FAILED (conclusion: failure), SUCCEEDED (conclusion: success), CANCELLED (conclusion: cancelled).",
+        "4. For RUNNING runs that look stuck (started long ago, no progress), propose cancel_action_run — confirm the runId with the user first.",
+        "5. For FAILED runs, propose either rerun_action_run (entire run) or rerun_action_run_failed_jobs (only failed jobs) — confirm the runId and the rerun strategy with the user first.",
+        "6. Summarize: total runs, how many running, how many failed, how many succeeded, and a recommended action for each problematic run.",
+        "",
+        "Do NOT cancel or rerun without explicit user confirmation. Always call get_action_run to verify the current status before any cancel/rerun.",
+      ].join("\n");
+      return {
+        description: `Triage Actions runs in ${target}`,
         messages: [{ role: "user", content: { type: "text", text } }],
       };
     },
