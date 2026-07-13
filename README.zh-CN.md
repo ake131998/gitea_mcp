@@ -281,6 +281,23 @@ gitea-mcp
 | `add_topic` | 按名称添加单个主题 |
 | `remove_topic` | 按名称移除单个主题 |
 
+### 合并请求 (Pull Requests)
+
+| 工具 | 说明 |
+|------|------|
+| `list_pull_requests` | 列出仓库的 PR（按状态、标签、排序、里程碑筛选） |
+| `get_pull_request` | 按 PR 编号获取单个 PR 详情 |
+| `create_pull_request` | 创建 PR（标题、源分支 head、目标分支 base、正文） |
+| `update_pull_request` | 编辑 PR 或关闭/重开（state: open \| closed） |
+| `merge_pull_request` | 合并 PR（策略: merge \| squash \| rebase \| rebase-merge）—— **不可逆** |
+| `is_pull_merged` | 检查 PR 是否已合并 |
+| `list_pull_commits` | 列出 PR 中的提交 |
+| `list_pull_files` | 列出 PR 变更的文件 |
+
+> **说明：** PR 与 issue 共享编号空间（PR #N == Issue #N）。PR 的评论、标签、
+> 里程碑复用 **issue** 工具——把 PR 编号当作 `index` 传入即可。只有 PR 专属操作
+> 才使用上表工具。
+
 ### 仓库辅助 (Repository Helpers)
 
 | 工具 | 说明 |
@@ -298,8 +315,9 @@ gitea-mcp
 - **工具描述** —— 每个工具的描述都标出其关键风险（分页、标签 ID 与名称、破坏性
   作用范围）和最小用法示例。
 - **Prompts 与 Resources** —— 工作流模板（`triage_issues`、`summarize_issue`、
-  `audit_labels`、`milestone_report`）与按需参考文档（字段参考、标签指南、工具
-  食谱），供支持的客户端使用。
+  `triage_pull_requests`、`summarize_pull_request`、`audit_labels`、
+  `milestone_report`）与按需参考文档（字段参考、标签指南、工具食谱），供支持的
+  客户端使用。
 
 ### 动作技能
 
@@ -319,6 +337,11 @@ gitea-mcp
 | `gitea-plan-milestones` | 创建 / 编辑 / 关闭里程碑 |
 | `gitea-resolve-repo` | 解析 owner/repo 或列出仓库 |
 | `gitea-configure` | 修复连接——实例地址、令牌或 401/403 报错 |
+| `gitea-find-pulls` | 发现 / 读取 PR 及其提交与变更文件 |
+| `gitea-create-pull` | 创建 PR（先做查重） |
+| `gitea-update-pull` | 编辑字段、关闭不合并、重开、WIP 切换 |
+| `gitea-merge-pull` | 合并 PR（先检查可合并性并经用户确认） |
+| `gitea-summarize-pull` | 读取并总结 PR 以供审查 |
 
 每个技能都是面向 AI 的简短动作流程（目的、何时用、何时不用、规则、先检查什么）。
 创建、评论、里程碑三类技能还内嵌**正文模板**（bug / 新功能 / 性能 issue、评论、

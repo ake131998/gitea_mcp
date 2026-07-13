@@ -15,6 +15,8 @@ const CLIENT_METHODS = [
   "addIssueLabels", "removeIssueLabel", "replaceIssueLabels", "clearIssueLabels",
   "listMilestones", "getMilestone", "createMilestone", "updateMilestone", "deleteMilestone",
   "listMyRepos",
+  "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
+  "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
 ] as const;
 
 type MockClient = Record<string, ReturnType<typeof vi.fn>>;
@@ -92,13 +94,19 @@ describe("enriched tool descriptions", () => {
     expect(d("create_label")).toContain("hex");
     expect(d("delete_label")).toContain("EVERY issue");
     expect(d("resolve_repo")).toContain("origin");
+    expect(d("merge_pull_request")).toContain("IRREVERSIBLE");
+    expect(d("update_pull_request")).toContain("REPLACE");
+    expect(d("list_pull_requests").toLowerCase()).toContain("page");
   });
 });
 
 describe("workflow prompts", () => {
-  const PROMPTS = ["triage_issues", "summarize_issue", "audit_labels", "milestone_report"];
+  const PROMPTS = [
+    "triage_issues", "summarize_issue", "audit_labels", "milestone_report",
+    "triage_pull_requests", "summarize_pull_request",
+  ];
 
-  it("registers all four prompts with descriptions", async () => {
+  it("registers all prompts with descriptions", async () => {
     const { createServer } = await import("../server.js");
     const server = await createServer("https://g", undefined, "o", "r");
     const prompts = promptsOf(server);
@@ -117,6 +125,8 @@ describe("workflow prompts", () => {
       ["summarize_issue", { index: 7 }],
       ["audit_labels", {}],
       ["milestone_report", {}],
+      ["triage_pull_requests", {}],
+      ["summarize_pull_request", { index: 9 }],
     ];
     for (const [name, args] of cases) {
       const result = (await prompts[name].callback(args, {})) as {

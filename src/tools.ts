@@ -230,3 +230,86 @@ export const RemoveTopicSchema = z.object({
 });
 
 export const GiteaStatusSchema = z.object({});
+
+// ── Pull Requests ──
+
+export const ListPullRequestsSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  state: z.enum(["open", "closed", "all"]).optional().default("open").describe("Pull request state filter"),
+  labels: z.string().optional().describe("Comma-separated label names"),
+  sort: z
+    .enum(["oldest", "recentupdate", "leastupdate", "mostcomment", "leastcomment", "priority"])
+    .optional()
+    .describe("Sort order for the pull request list"),
+  milestone: z.number().int().min(1).optional().describe("Milestone ID"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Pull requests per page"),
+});
+
+export const GetPullRequestSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+});
+
+export const CreatePullRequestSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  title: z.string().describe("Pull request title"),
+  body: z.string().optional().describe("Pull request body/description (supports Markdown)"),
+  head: z.string().describe("Source branch name (the branch you want to merge FROM). For forks use 'owner:branch'"),
+  base: z.string().describe("Target branch name (the branch you want to merge INTO)"),
+  assignee: z.string().optional().describe("Assignee username"),
+  assignees: z.array(z.string()).optional().describe("List of assignee usernames"),
+  labels: z.array(z.number()).optional().describe("List of label IDs"),
+  milestone: z.number().optional().describe("Milestone ID"),
+});
+
+export const UpdatePullRequestSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+  title: z.string().optional().describe("New pull request title"),
+  body: z.string().optional().describe("New pull request body/description"),
+  base: z.string().optional().describe("New target branch name (retargeting a PR is rarely reversible)"),
+  assignee: z.string().optional().describe("Assignee username"),
+  assignees: z.array(z.string()).optional().describe("List of assignee usernames"),
+  labels: z.array(z.number()).optional().describe("List of label IDs (REPLACES the entire set)"),
+  milestone: z.number().optional().describe("Milestone ID"),
+  state: z.enum(["open", "closed"]).optional().describe("Pull request state — 'closed' closes the PR without merging"),
+});
+
+export const MergePullRequestSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+  Do: z
+    .enum(["merge", "squash", "rebase", "rebase-merge"])
+    .describe("Merge strategy: 'merge' (merge commit), 'squash' (single commit), 'rebase' (rebase then fast-forward), 'rebase-merge' (rebase then merge commit)"),
+  MergeTitleField: z.string().optional().describe("Title for the merge commit"),
+  MergeMessageField: z.string().optional().describe("Message body for the merge commit"),
+  SHA: z.string().optional().describe("The expected HEAD SHA of the PR (fails if the branch moved since)"),
+});
+
+export const IsPullMergedSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+});
+
+export const ListPullCommitsSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Commits per page"),
+});
+
+export const ListPullFilesSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Pull request number"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Files per page"),
+});

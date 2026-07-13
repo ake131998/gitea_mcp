@@ -294,6 +294,23 @@ gitea-mcp
 | `add_topic` | Add a single topic by name |
 | `remove_topic` | Remove a single topic by name |
 
+### Pull Requests
+
+| Tool | Description |
+|------|-------------|
+| `list_pull_requests` | List pull requests in a repo (filter by state, labels, sort, milestone) |
+| `get_pull_request` | Fetch one pull request by its number |
+| `create_pull_request` | Create a pull request (title, head, base, body) |
+| `update_pull_request` | Edit a pull request or close/reopen it (state: open \| closed) |
+| `merge_pull_request` | Merge a pull request (strategy: merge \| squash \| rebase \| rebase-merge) — **irreversible** |
+| `is_pull_merged` | Check whether a pull request has been merged |
+| `list_pull_commits` | List the commits in a pull request |
+| `list_pull_files` | List the files changed in a pull request |
+
+> **Note:** a pull request shares its number space with issues (PR #N == Issue #N).
+> Comments, labels, and milestones on a PR reuse the **issue** tools — pass the PR
+> number as the `index`. Only PR-specific operations use the tools above.
+
 ### Repository Helpers
 
 | Tool | Description |
@@ -312,8 +329,9 @@ through three channels:
 - **Tool descriptions** — every tool's description flags its key risk (pagination,
   label ID-vs-name, destructive scope) and a minimal usage example.
 - **Prompts & resources** — workflow templates (`triage_issues`,
-  `summarize_issue`, `audit_labels`, `milestone_report`) and on-demand reference
-  docs (field reference, label guide, tool cookbook) for clients that surface them.
+  `summarize_issue`, `triage_pull_requests`, `summarize_pull_request`,
+  `audit_labels`, `milestone_report`) and on-demand reference docs (field
+  reference, label guide, tool cookbook) for clients that surface them.
 
 ### Action skills
 
@@ -334,6 +352,11 @@ say, delete instructions while creating). Install them with the
 | `gitea-plan-milestones` | creating / editing / closing milestones |
 | `gitea-resolve-repo` | resolving owner/repo or listing repositories |
 | `gitea-configure` | fixing the connection — instance URL, token, or 401/403 errors |
+| `gitea-find-pulls` | discovering / reading pull requests, their commits and files |
+| `gitea-create-pull` | creating a pull request (after a duplicate check) |
+| `gitea-update-pull` | editing fields, closing without merging, reopening, WIP toggle |
+| `gitea-merge-pull` | merging a pull request (after mergeability check + user confirmation) |
+| `gitea-summarize-pull` | reading and summarizing a pull request for review |
 
 Each skill is a short, AI-facing action flow (purpose, when to use, when not to,
 rules, and what to check first). The create, comment, and milestone skills also
