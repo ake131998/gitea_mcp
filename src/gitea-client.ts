@@ -207,6 +207,105 @@ export interface ReplaceTopicsParams {
   topics: string[];
 }
 
+export interface PullRequestBranch {
+  label: string;
+  ref: string;
+  sha: string;
+  repo: Repository;
+}
+
+export interface PullRequest {
+  id: number;
+  number: number;
+  title: string;
+  body?: string;
+  state: string;
+  html_url: string;
+  url: string;
+  labels: Label[];
+  assignee?: User;
+  assignees?: User[];
+  milestone?: Milestone;
+  user: User;
+  merged?: boolean;
+  merged_at?: string;
+  mergeable?: boolean;
+  draft?: boolean;
+  base: PullRequestBranch;
+  head: PullRequestBranch;
+  created_at: string;
+  updated_at: string;
+  closed_at?: string;
+}
+
+export interface PullCommit {
+  sha: string;
+  html_url: string;
+  commit: {
+    message: string;
+    author: { name: string; email: string; date?: string };
+  };
+  author?: User;
+}
+
+export interface PullFile {
+  sha: string;
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  html_url: string;
+}
+
+export interface ListPullRequestsParams {
+  owner: string;
+  repo: string;
+  state?: "open" | "closed" | "all";
+  labels?: string;
+  sort?: "oldest" | "recentupdate" | "leastupdate" | "mostcomment" | "leastcomment" | "priority";
+  milestone?: number;
+  page?: number;
+  limit?: number;
+}
+
+export interface CreatePullRequestParams {
+  owner: string;
+  repo: string;
+  title: string;
+  body?: string;
+  head: string;
+  base: string;
+  assignee?: string;
+  assignees?: string[];
+  labels?: number[];
+  milestone?: number;
+}
+
+export interface UpdatePullRequestParams {
+  owner: string;
+  repo: string;
+  index: number;
+  title?: string;
+  body?: string;
+  base?: string;
+  assignee?: string;
+  assignees?: string[];
+  labels?: number[];
+  milestone?: number;
+  state?: "open" | "closed";
+}
+
+export interface MergePullRequestParams {
+  owner: string;
+  repo: string;
+  index: number;
+  Do: "merge" | "squash" | "rebase" | "rebase-merge";
+  MergeTitleField?: string;
+  MergeMessageField?: string;
+  SHA?: string;
+}
+
 export class GiteaClient {
   private baseUrl: string;
   private candidates: CandidateCredential[];
@@ -623,5 +722,107 @@ export class GiteaClient {
   async removeTopic(owner: string, repo: string, topic: string): Promise<void> {
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/topics/${encodeURIComponent(topic)}`;
     return this.request<void>("DELETE", path);
+  }
+
+  async listPullRequests(params: ListPullRequestsParams): Promise<PullRequest[]> {
+    const searchParams = new URLSearchParams();
+    if (params.state) searchParams.set("state", params.state);
+    if (params.labels) searchParams.set("labels", params.labels);
+    if (params.sort) searchParams.set("sort", params.sort);
+    if (params.milestone) searchParams.set("milestone", String(params.milestone));
+    if (params.page) searchParams.set("page", String(params.page));
+    if (params.limit) searchParams.set("limit", String(params.limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/pulls${query ? `?${query}` : ""}`;
+    return this.request<PullRequest[]>("GET", path);
+  }
+
+  async getPullRequest(owner: string, repo: string, index: number): Promise<PullRequest> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}`;
+    return this.request<PullRequest>("GET", path);
+  }
+
+  async createPullRequest(params: CreatePullRequestParams): Promise<PullRequest> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/pulls`;
+    return this.request<PullRequest>("POST", path, {
+      title: params.title,
+      body: params.body,
+      head: params.head,
+      base: params.base,
+      assignee: params.assignee,
+      assignees: params.assignees,
+      labels: params.labels,
+      milestone: params.milestone,
+    });
+  }
+
+  async updatePullRequest(params: UpdatePullRequestParams): Promise<PullRequest> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/pulls/${params.index}`;
+    return this.request<PullRequest>("PATCH", path, {
+      title: params.title,
+      body: params.body,
+      base: params.base,
+      assignee: params.assignee,
+      assignees: params.assignees,
+      labels: params.labels,
+      milestone: params.milestone,
+      state: params.state,
+    });
+  }
+
+  async isPullMerged(owner: string, repo: string, index: number): Promise<boolean> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}/merge`;
+    try {
+      await this.request<void>("GET", path);
+      return true;
+    } catch (err) {
+      // Gitea returns 404 when the pull request has not been merged; any other
+      // status propagates. Status-based branching (not message substring) per §2.3.
+      if (err instanceof GiteaApiError && err.status === 404) return false;
+      throw err;
+    }
+  }
+
+  async mergePullRequest(params: MergePullRequestParams): Promise<void> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/pulls/${params.index}/merge`;
+    return this.request<void>("POST", path, {
+      Do: params.Do,
+      MergeTitleField: params.MergeTitleField,
+      MergeMessageField: params.MergeMessageField,
+      SHA: params.SHA,
+    });
+  }
+
+  async listPullCommits(
+    owner: string,
+    repo: string,
+    index: number,
+    page?: number,
+    limit?: number,
+  ): Promise<PullCommit[]> {
+    const searchParams = new URLSearchParams();
+    if (page) searchParams.set("page", String(page));
+    if (limit) searchParams.set("limit", String(limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}/commits${query ? `?${query}` : ""}`;
+    return this.request<PullCommit[]>("GET", path);
+  }
+
+  async listPullFiles(
+    owner: string,
+    repo: string,
+    index: number,
+    page?: number,
+    limit?: number,
+  ): Promise<PullFile[]> {
+    const searchParams = new URLSearchParams();
+    if (page) searchParams.set("page", String(page));
+    if (limit) searchParams.set("limit", String(limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${index}/files${query ? `?${query}` : ""}`;
+    return this.request<PullFile[]>("GET", path);
   }
 }

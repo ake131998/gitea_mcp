@@ -18,6 +18,8 @@ const CLIENT_METHODS = [
   "listMilestones", "getMilestone", "createMilestone", "updateMilestone", "deleteMilestone",
   "listMyRepos", "getCredentialStatus",
   "listTopics", "replaceTopics", "addTopic", "removeTopic",
+  "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
+  "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
 ] as const;
 
 type MockClient = Record<string, ReturnType<typeof vi.fn>>;
@@ -39,6 +41,8 @@ const EXPECTED_TOOLS = [
   "add_issue_labels", "remove_issue_label", "replace_issue_labels", "clear_issue_labels",
   "list_milestones", "get_milestone", "create_milestone", "update_milestone", "delete_milestone",
   "list_topics", "replace_topics", "add_topic", "remove_topic",
+  "list_pull_requests", "get_pull_request", "create_pull_request", "update_pull_request",
+  "merge_pull_request", "is_pull_merged", "list_pull_commits", "list_pull_files",
   "resolve_repo", "list_my_repos", "gitea_status",
 ];
 
@@ -225,6 +229,80 @@ describe("tool handlers", () => {
     const result = await registeredTools(server as never)["remove_topic"].handler({ topic: "go" });
     expect(mockClient.removeTopic).toHaveBeenCalledWith("o", "r", "go");
     expect(result.content[0].text).toBe("Topic 'go' removed from o/r.");
+  });
+
+  it("list_pull_requests returns JSON of the client result", async () => {
+    const { createServer } = await import("../server.js");
+    const pulls = [{ number: 1 }];
+    mockClient.listPullRequests.mockResolvedValue(pulls);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_pull_requests"].handler({});
+    expect(mockClient.listPullRequests).toHaveBeenCalledWith(expect.objectContaining({ owner: "o", repo: "r" }));
+    expect(JSON.parse(result.content[0].text)).toEqual(pulls);
+  });
+
+  it("create_pull_request spreads owner/repo into the create params", async () => {
+    const { createServer } = await import("../server.js");
+    const pull = { number: 7 };
+    mockClient.createPullRequest.mockResolvedValue(pull);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_pull_request"].handler({
+      title: "T", head: "feature", base: "main",
+    });
+    expect(mockClient.createPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", title: "T", head: "feature", base: "main" }),
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual(pull);
+  });
+
+  it("update_pull_request spreads owner/repo into the update params", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.updatePullRequest.mockResolvedValue({ number: 3 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["update_pull_request"].handler({ index: 3, state: "closed" });
+    expect(mockClient.updatePullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", index: 3, state: "closed" }),
+    );
+  });
+
+  it("merge_pull_request returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.mergePullRequest.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["merge_pull_request"].handler({ index: 9, Do: "squash" });
+    expect(mockClient.mergePullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", index: 9, Do: "squash" }),
+    );
+    expect(result.content[0].text).toContain("merged");
+  });
+
+  it("is_pull_merged returns the merged boolean as JSON", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.isPullMerged.mockResolvedValue(true);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["is_pull_merged"].handler({ index: 1 });
+    expect(mockClient.isPullMerged).toHaveBeenCalledWith("o", "r", 1);
+    expect(JSON.parse(result.content[0].text)).toEqual({ merged: true });
+  });
+
+  it("list_pull_commits forwards owner/repo/index/pagination", async () => {
+    const { createServer } = await import("../server.js");
+    const commits = [{ sha: "abc" }];
+    mockClient.listPullCommits.mockResolvedValue(commits);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_pull_commits"].handler({ index: 5, page: 1 });
+    expect(mockClient.listPullCommits).toHaveBeenCalledWith("o", "r", 5, 1, undefined);
+    expect(JSON.parse(result.content[0].text)).toEqual(commits);
+  });
+
+  it("list_pull_files forwards owner/repo/index/pagination", async () => {
+    const { createServer } = await import("../server.js");
+    const files = [{ filename: "a.ts" }];
+    mockClient.listPullFiles.mockResolvedValue(files);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_pull_files"].handler({ index: 5 });
+    expect(mockClient.listPullFiles).toHaveBeenCalledWith("o", "r", 5, undefined, undefined);
+    expect(JSON.parse(result.content[0].text)).toEqual(files);
   });
 });
 

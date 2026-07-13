@@ -33,6 +33,14 @@ import {
   AddTopicSchema,
   RemoveTopicSchema,
   GiteaStatusSchema,
+  ListPullRequestsSchema,
+  GetPullRequestSchema,
+  CreatePullRequestSchema,
+  UpdatePullRequestSchema,
+  MergePullRequestSchema,
+  IsPullMergedSchema,
+  ListPullCommitsSchema,
+  ListPullFilesSchema,
 } from "./tools.js";
 import { parseRemotes, selectRemote, resolveGitConfigPath } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
@@ -531,6 +539,136 @@ export async function createServer(
     },
   );
 
+  // ── Pull Requests ──
+
+  server.registerTool(
+    "list_pull_requests",
+    {
+      description:
+        "List pull requests in one Gitea repository. Paginated: page is 1-based, limit <= 100; keep paging until a page returns fewer than `limit`. Filters: state (default open), labels (comma-separated NAMES), sort, milestone. Example: list_pull_requests({ state: 'open', page: 1, limit: 50 }). Cross-repo PR search uses search_issues({ type: 'pulls' }).",
+      inputSchema: ListPullRequestsSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const pulls = await client.listPullRequests({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(pulls, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_pull_request",
+    {
+      description:
+        "Fetch one pull request by its `index` — the number shown in the PR URL (e.g. #42), NOT the internal `id`. Returns the full PR including base/head branches, mergeable status, merged flag, labels, and milestone.",
+      inputSchema: GetPullRequestSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const pull = await client.getPullRequest(owner, repo, input.index);
+      return {
+        content: [{ type: "text", text: JSON.stringify(pull, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "create_pull_request",
+    {
+      description:
+        "Create a pull request. `title`, `head` (source branch), and `base` (target branch) are required. For cross-fork PRs use 'owner:branch' in `head`. `labels` takes label IDs (numbers) — call list_labels first. Prefix the title with `WIP:` or `[WIP]` to prevent accidental merge while work is in progress. Returns the created PR including its `number`.",
+      inputSchema: CreatePullRequestSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const pull = await client.createPullRequest({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(pull, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "update_pull_request",
+    {
+      description:
+        "Update one pull request by `index` (PATCH: only provided fields change). Set `state` to 'closed' to close a PR WITHOUT merging (reopens with 'open'). RISK: passing `labels` REPLACES the entire label set (give the full desired ID list); `base` retargets the PR and is rarely reversible. To change a single label use add_issue_labels/remove_issue_label (PR #N == Issue #N — label endpoints are shared).",
+      inputSchema: UpdatePullRequestSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const pull = await client.updatePullRequest({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(pull, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "merge_pull_request",
+    {
+      description:
+        "Merge a pull request by `index`. `Do` selects the strategy: 'merge' (merge commit), 'squash' (single commit), 'rebase' (rebase + fast-forward), 'rebase-merge' (rebase + merge commit). Optional `MergeTitleField`/`MergeMessageField` customize the merge commit; `SHA` guards against branch drift. IRREVERSIBLE — confirm the index, strategy, and that the PR is mergeable (get_pull_request `mergeable: true`) with the user BEFORE merging. Check is_pull_merged first if unsure.",
+      inputSchema: MergePullRequestSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      await client.mergePullRequest({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: `Pull request #${input.index} merged (${input.Do}).` }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "is_pull_merged",
+    {
+      description:
+        "Check whether a pull request has been merged. Returns a boolean (`true` = merged, `false` = not merged). Call before merge_pull_request to avoid a redundant attempt, or to confirm a PR's final state.",
+      inputSchema: IsPullMergedSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const merged = await client.isPullMerged(owner, repo, input.index);
+      return {
+        content: [{ type: "text", text: JSON.stringify({ merged }, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_pull_commits",
+    {
+      description:
+        "List the commits in one pull request by its `index`. Paginated (page 1-based, limit <= 100). Each entry has `sha`, `html_url`, the commit `message`, and an optional `author`. Useful for reviewing what a PR changes before merging.",
+      inputSchema: ListPullCommitsSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const commits = await client.listPullCommits(owner, repo, input.index, input.page, input.limit);
+      return {
+        content: [{ type: "text", text: JSON.stringify(commits, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_pull_files",
+    {
+      description:
+        "List the files changed in one pull request by its `index`. Paginated (page 1-based, limit <= 100). Each entry has `filename`, `status` (added/modified/deleted/renamed), `additions`, `deletions`, `changes`, and `html_url`. Use to understand a PR's diff scope before reviewing or merging.",
+      inputSchema: ListPullFilesSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const files = await client.listPullFiles(owner, repo, input.index, input.page, input.limit);
+      return {
+        content: [{ type: "text", text: JSON.stringify(files, null, 2) }],
+      };
+    },
+  );
+
   // ── Helpers ──
 
   server.registerTool(
@@ -776,6 +914,78 @@ export async function createServer(
       ].join("\n");
       return {
         description: `Milestone report for ${target}`,
+        messages: [{ role: "user", content: { type: "text", text } }],
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "triage_pull_requests",
+    {
+      title: "Triage pull requests",
+      description:
+        "List open pull requests in a repo, inspect high-priority ones (commits, files, mergeability), and propose review/merge/close actions. Returns an instruction the model executes via the tools.",
+      argsSchema: {
+        owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+        repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+        state: z
+          .enum(["open", "closed", "all"])
+          .optional()
+          .describe("Which pull requests to triage (default open)"),
+      },
+    },
+    async ({ owner, repo, state }) => {
+      const target = `${owner ?? "<GITEA_DEFAULT_OWNER>"}/${repo ?? "<GITEA_DEFAULT_REPO>"}`;
+      const st = state ?? "open";
+      const text = [
+        `Triage ${st} pull requests in the Gitea repository ${target}.`,
+        "",
+        "Steps:",
+        `1. Call list_pull_requests({ state: "${st}", page: 1, limit: 50 }). Page forward while a page returns exactly 50.`,
+        "2. For each PR, note: title, author, head/base branches, draft/WIP status, and whether it is mergeable.",
+        "3. For PRs needing deeper review, call get_pull_request + list_pull_commits + list_pull_files to assess scope.",
+        "4. Propose for each PR one of: READY TO MERGE (after confirmation), NEEDS REVIEW (leave a comment), NEEDS CHANGES, or STALE (close with update_pull_request state='closed' — do NOT delete).",
+        "5. Summarize: total triaged, how many are mergeable, how many need changes, how many are stale.",
+        "",
+        "Do NOT merge or close without explicit user confirmation. Use is_pull_merged to verify a PR's state when uncertain.",
+      ].join("\n");
+      return {
+        description: `Triage ${st} pull requests in ${target}`,
+        messages: [{ role: "user", content: { type: "text", text } }],
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "summarize_pull_request",
+    {
+      title: "Summarize a pull request",
+      description:
+        "Read one pull request (body, commits, changed files, comment thread) and produce a concise review summary: what it changes, mergeability, open questions, and a recommended action (merge / request changes / close).",
+      argsSchema: {
+        owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+        repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+        index: z.number().int().min(1).describe("Pull request number (the # shown in the URL)"),
+      },
+    },
+    async ({ owner, repo, index }) => {
+      const target = `${owner ?? "<GITEA_DEFAULT_OWNER>"}/${repo ?? "<GITEA_DEFAULT_REPO>"}#${index}`;
+      const text = [
+        `Summarize Gitea pull request ${target}.`,
+        "",
+        "Steps:",
+        "1. get_pull_request to read the title, body, base/head branches, mergeable status, merged state, labels, and milestone.",
+        "2. list_pull_commits to see the commit history (page if needed).",
+        "3. list_pull_files to understand the diff scope (files changed, additions/deletions).",
+        "4. list_comments to read the review discussion (PR #N == Issue #N — comments are shared).",
+        "   CAVEAT: list_comments returns only the server's default page — note if it looks truncated.",
+        "5. Produce a summary: a 2-3 sentence overview of WHAT the PR changes, the mergeability/conflict status, key FEEDBACK in the discussion, unresolved QUESTIONS, and one recommended NEXT ACTION (merge / request changes / close).",
+        "6. Attribute statements to their author (user.login); never invent quotes.",
+        "",
+        "Do not merge, edit, or close anything. This is read-only analysis.",
+      ].join("\n");
+      return {
+        description: `Summarize pull request ${target}`,
         messages: [{ role: "user", content: { type: "text", text } }],
       };
     },

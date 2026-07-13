@@ -458,6 +458,133 @@ describe("GiteaClient", () => {
     });
   });
 
+  describe("pull requests", () => {
+    it("listPullRequests builds query from filters", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullRequests({
+        owner: "o", repo: "r", state: "open", labels: "bug", sort: "oldest", milestone: 5, page: 1, limit: 20,
+      });
+      expect(lastCall(fetchMock).url).toBe(
+        "https://g/api/v1/repos/o/r/pulls?state=open&labels=bug&sort=oldest&milestone=5&page=1&limit=20",
+      );
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+    });
+
+    it("listPullRequests omits query when no filters", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullRequests({ owner: "o", repo: "r" });
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls");
+    });
+
+    it("getPullRequest builds the pull path", async () => {
+      const fetchMock = stubFetch(buildResponse({ number: 42 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.getPullRequest("o", "r", 42);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/42");
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+      expect(result).toEqual({ number: 42 });
+    });
+
+    it("createPullRequest posts the pull body", async () => {
+      const fetchMock = stubFetch(buildResponse({ number: 1 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.createPullRequest({
+        owner: "o", repo: "r", title: "T", head: "feature", base: "main",
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/pulls");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({
+        title: "T", body: undefined, head: "feature", base: "main",
+        assignee: undefined, assignees: undefined, labels: undefined, milestone: undefined,
+      });
+      expect(result).toEqual({ number: 1 });
+    });
+
+    it("updatePullRequest patches the pull", async () => {
+      const fetchMock = stubFetch(buildResponse({ number: 7 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.updatePullRequest({ owner: "o", repo: "r", index: 7, state: "closed" });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/pulls/7");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(init.body as string)).toEqual({
+        title: undefined, body: undefined, base: undefined,
+        assignee: undefined, assignees: undefined, labels: undefined, milestone: undefined,
+        state: "closed",
+      });
+    });
+
+    it("isPullMerged returns true on 2xx", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 204));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const merged = await client.isPullMerged("o", "r", 3);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/3/merge");
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+      expect(merged).toBe(true);
+    });
+
+    it("isPullMerged returns false on 404", async () => {
+      const fetchMock = stubFetch(buildResponse("not merged", 404, "Not Found"));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const merged = await client.isPullMerged("o", "r", 3);
+      expect(merged).toBe(false);
+    });
+
+    it("isPullMerged rethrows non-404 errors", async () => {
+      const fetchMock = stubFetch(buildResponse("server error", 500, "Internal Server Error"));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await expect(client.isPullMerged("o", "r", 3)).rejects.toThrow(GiteaApiError);
+    });
+
+    it("mergePullRequest posts the merge body and resolves void", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 200));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.mergePullRequest({
+        owner: "o", repo: "r", index: 9, Do: "squash",
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/pulls/9/merge");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({
+        Do: "squash", MergeTitleField: undefined, MergeMessageField: undefined, SHA: undefined,
+      });
+      expect(result).toBeUndefined();
+    });
+
+    it("listPullCommits builds the commits path with pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullCommits("o", "r", 5, 1, 30);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/5/commits?page=1&limit=30");
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+    });
+
+    it("listPullCommits omits query when no pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullCommits("o", "r", 5);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/5/commits");
+    });
+
+    it("listPullFiles builds the files path with pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullFiles("o", "r", 5, 2, 10);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/5/files?page=2&limit=10");
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+    });
+
+    it("listPullFiles omits query when no pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listPullFiles("o", "r", 5);
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/pulls/5/files");
+    });
+  });
+
   describe("multi-candidate auth state machine", () => {
     /** Build a candidate with sane defaults. */
     function candidate(overrides: Partial<CandidateCredential>): CandidateCredential {
