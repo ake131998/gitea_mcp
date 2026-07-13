@@ -298,6 +298,19 @@ gitea-mcp
 > 里程碑复用 **issue** 工具——把 PR 编号当作 `index` 传入即可。只有 PR 专属操作
 > 才使用上表工具。
 
+### Actions
+
+| 工具 | 说明 |
+|------|------|
+| `list_action_runs` | 列出 Gitea Actions 工作流运行（按 `status`、`branch`、`event`、`actor`、`head_sha` 筛选） |
+| `get_action_run` | 按 `runId` 获取单个工作流运行——取消/重试前检查状态 |
+| `cancel_action_run` | 取消**进行中**的运行（queued、in_progress、running）——部分破坏性 |
+| `rerun_action_run` | 重试整个**已完成**的运行——需 Gitea 1.26.0+ |
+| `rerun_action_run_failed_jobs` | 仅重试已完成运行中失败的 job——需 Gitea 1.26.0+ |
+
+> **说明：** 取消仅对进行中的运行有效；重试仅对已完成的运行有效。操作前务必先调用
+> `get_action_run` 确认当前状态，并向用户确认 `runId` 后再取消或重试。
+
 ### 仓库辅助 (Repository Helpers)
 
 | 工具 | 说明 |
@@ -316,8 +329,8 @@ gitea-mcp
   作用范围）和最小用法示例。
 - **Prompts 与 Resources** —— 工作流模板（`triage_issues`、`summarize_issue`、
   `triage_pull_requests`、`summarize_pull_request`、`audit_labels`、
-  `milestone_report`）与按需参考文档（字段参考、标签指南、工具食谱），供支持的
-  客户端使用。
+  `milestone_report`、`triage_action_runs`）与按需参考文档（字段参考、标签指南、
+  工具食谱），供支持的客户端使用。
 
 ### 动作技能
 
@@ -342,6 +355,9 @@ gitea-mcp
 | `gitea-update-pull` | 编辑字段、关闭不合并、重开、WIP 切换 |
 | `gitea-merge-pull` | 合并 PR（先检查可合并性并经用户确认） |
 | `gitea-summarize-pull` | 读取并总结 PR 以供审查 |
+| `gitea-find-actions` | 发现 / 读取 Actions 工作流运行 |
+| `gitea-cancel-action` | 取消进行中的运行（先检查状态并经用户确认） |
+| `gitea-rerun-action` | 重试已完成的运行——全部或仅失败的 job |
 
 每个技能都是面向 AI 的简短动作流程（目的、何时用、何时不用、规则、先检查什么）。
 创建、评论、里程碑三类技能还内嵌**正文模板**（bug / 新功能 / 性能 issue、评论、

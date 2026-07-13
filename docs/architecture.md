@@ -280,7 +280,12 @@ with the actual tool behavior. The pull-request guidance mirrors the issue guida
 symmetrically: for every PR tool group there is a matching action skill
 (`gitea-find-pulls`, `gitea-create-pull`, `gitea-update-pull`, `gitea-merge-pull`,
 `gitea-summarize-pull`), a prompt (`triage_pull_requests`, `summarize_pull_request`),
-and a tool-cookbook / field-reference / instructions entry.
+and a tool-cookbook / field-reference / instructions entry. The Actions guidance
+follows the same pattern for workflow-run maintenance: skills
+(`gitea-find-actions`, `gitea-cancel-action`, `gitea-rerun-action`) and a prompt
+(`triage_action_runs`) cover the list/get/cancel/rerun tool group, with cancel and
+rerun skills enforcing a pre-check (status verification) + user-confirmation flow
+mirroring the merge-pull safety pattern.
 
 ## 6. Environment Contract
 

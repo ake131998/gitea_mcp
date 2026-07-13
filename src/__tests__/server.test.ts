@@ -20,6 +20,7 @@ const CLIENT_METHODS = [
   "listTopics", "replaceTopics", "addTopic", "removeTopic",
   "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
   "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
+  "listActionRuns", "getActionRun", "cancelActionRun", "rerunActionRun", "rerunActionRunFailedJobs",
 ] as const;
 
 type MockClient = Record<string, ReturnType<typeof vi.fn>>;
@@ -43,6 +44,8 @@ const EXPECTED_TOOLS = [
   "list_topics", "replace_topics", "add_topic", "remove_topic",
   "list_pull_requests", "get_pull_request", "create_pull_request", "update_pull_request",
   "merge_pull_request", "is_pull_merged", "list_pull_commits", "list_pull_files",
+  "list_action_runs", "get_action_run", "cancel_action_run",
+  "rerun_action_run", "rerun_action_run_failed_jobs",
   "resolve_repo", "list_my_repos", "gitea_status",
 ];
 
@@ -313,6 +316,62 @@ describe("tool handlers", () => {
     const result = await registeredTools(server as never)["list_pull_files"].handler({ index: 5 });
     expect(mockClient.listPullFiles).toHaveBeenCalledWith("o", "r", 5, undefined, undefined);
     expect(JSON.parse(result.content[0].text)).toEqual(files);
+  });
+
+  it("list_action_runs returns JSON of the client result", async () => {
+    const { createServer } = await import("../server.js");
+    const runs = { workflow_runs: [{ id: 1, status: "success" }], count: 1 };
+    mockClient.listActionRuns.mockResolvedValue(runs);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_action_runs"].handler({ status: "failure" });
+    expect(mockClient.listActionRuns).toHaveBeenCalledWith(expect.objectContaining({ owner: "o", repo: "r", status: "failure" }));
+    expect(JSON.parse(result.content[0].text)).toEqual(runs);
+  });
+
+  it("get_action_run forwards owner/repo/runId and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const run = { id: 42, status: "in_progress" };
+    mockClient.getActionRun.mockResolvedValue(run);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["get_action_run"].handler({ runId: 42 });
+    expect(mockClient.getActionRun).toHaveBeenCalledWith("o", "r", 42);
+    expect(JSON.parse(result.content[0].text)).toEqual(run);
+  });
+
+  it("cancel_action_run returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.cancelActionRun.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["cancel_action_run"].handler({ runId: 7 });
+    expect(mockClient.cancelActionRun).toHaveBeenCalledWith("o", "r", 7);
+    expect(result.content[0].text).toBe("Action run #7 cancelled.");
+  });
+
+  it("rerun_action_run returns the new run JSON when body present", async () => {
+    const { createServer } = await import("../server.js");
+    const newRun = { id: 100, status: "queued" };
+    mockClient.rerunActionRun.mockResolvedValue(newRun);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["rerun_action_run"].handler({ runId: 9 });
+    expect(mockClient.rerunActionRun).toHaveBeenCalledWith("o", "r", 9);
+    expect(JSON.parse(result.content[0].text)).toEqual(newRun);
+  });
+
+  it("rerun_action_run returns a confirmation string when body absent", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.rerunActionRun.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["rerun_action_run"].handler({ runId: 9 });
+    expect(result.content[0].text).toContain("rerun started");
+  });
+
+  it("rerun_action_run_failed_jobs returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.rerunActionRunFailedJobs.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["rerun_action_run_failed_jobs"].handler({ runId: 12 });
+    expect(mockClient.rerunActionRunFailedJobs).toHaveBeenCalledWith("o", "r", 12);
+    expect(result.content[0].text).toContain("Failed jobs rerun started");
   });
 });
 
