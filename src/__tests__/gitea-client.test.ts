@@ -664,6 +664,87 @@ describe("GiteaClient", () => {
     });
   });
 
+  describe("releases", () => {
+    it("listReleases builds query from filters", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listReleases({
+        owner: "o", repo: "r", draft: false, prerelease: true, page: 1, limit: 20,
+      });
+      expect(lastCall(fetchMock).url).toBe(
+        "https://g/api/v1/repos/o/r/releases?draft=false&pre-release=true&page=1&limit=20",
+      );
+      expect(lastCall(fetchMock).init.method).toBe("GET");
+    });
+
+    it("listReleases omits query when no filters", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listReleases({ owner: "o", repo: "r" });
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/releases");
+    });
+
+    it("getRelease builds the release path", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 42 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.getRelease("o", "r", 42);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/releases/42");
+      expect(init.method).toBe("GET");
+      expect(result).toEqual({ id: 42 });
+    });
+
+    it("getReleaseByTag builds the tag path and URL-encodes", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 5 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.getReleaseByTag("o", "r", "v1.2.0");
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/releases/tags/v1.2.0");
+      expect(init.method).toBe("GET");
+      expect(result).toEqual({ id: 5 });
+    });
+
+    it("createRelease posts the release body", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 1 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.createRelease({
+        owner: "o", repo: "r", tag_name: "v1.0.0", name: "Title", body: "notes",
+        target_commitish: "main", draft: false, prerelease: false,
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/releases");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({
+        tag_name: "v1.0.0", name: "Title", body: "notes",
+        target_commitish: "main", draft: false, prerelease: false,
+      });
+      expect(result).toEqual({ id: 1 });
+    });
+
+    it("updateRelease patches the release", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 7 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.updateRelease({ owner: "o", repo: "r", id: 7, name: "New", body: "edited" });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/releases/7");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(init.body as string)).toEqual({
+        tag_name: undefined, name: "New", body: "edited",
+        target_commitish: undefined, draft: undefined, prerelease: undefined,
+      });
+    });
+
+    it("deleteRelease sends DELETE and resolves void", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 204));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.deleteRelease("o", "r", 3);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/releases/3");
+      expect(init.method).toBe("DELETE");
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe("multi-candidate auth state machine", () => {
     /** Build a candidate with sane defaults. */
     function candidate(overrides: Partial<CandidateCredential>): CandidateCredential {

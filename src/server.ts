@@ -46,6 +46,12 @@ import {
   CancelActionRunSchema,
   RerunActionRunSchema,
   RerunActionRunFailedJobsSchema,
+  ListReleasesSchema,
+  GetReleaseSchema,
+  GetReleaseByTagSchema,
+  CreateReleaseSchema,
+  UpdateReleaseSchema,
+  DeleteReleaseSchema,
 } from "./tools.js";
 import { parseRemotes, selectRemote, resolveGitConfigPath } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
@@ -752,6 +758,104 @@ export async function createServer(
       await client.rerunActionRunFailedJobs(owner, repo, input.runId);
       return {
         content: [{ type: "text", text: `Failed jobs rerun started for action run #${input.runId}.` }],
+      };
+    },
+  );
+
+  // ── Releases ──
+
+  server.registerTool(
+    "list_releases",
+    {
+      description:
+        "List releases in one Gitea repository. Paginated: page is 1-based, limit <= 100; keep paging until a page returns fewer than `limit`. Optional filters: draft (true = drafts only, false = published only) and prerelease (true = prereleases only, false = stable only). Each release carries `id` (used by get_release/update_release/delete_release), `tag_name`, `name` (title), `body` (release notes), `draft`, `prerelease`, and `attachments`. Example: list_releases({ page: 1, limit: 50 })",
+      inputSchema: ListReleasesSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const releases = await client.listReleases({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(releases, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_release",
+    {
+      description:
+        "Fetch one release by its numeric `id` (NOT the tag name — get the id from list_releases). Returns the full release including the title (`name`), release notes (`body`), `tag_name`, `draft`/`prerelease` flags, `target_commitish`, and `attachments`. Use get_release_by_tag to look up a release when you only know the tag name.",
+      inputSchema: GetReleaseSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const release = await client.getRelease(owner, repo, input.id);
+      return {
+        content: [{ type: "text", text: JSON.stringify(release, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_release_by_tag",
+    {
+      description:
+        "Fetch one release by its `tag` name (e.g. 'v1.2.0'). Useful when you only know the Git tag, not the numeric release `id`. Returns the same release shape as get_release; the response includes the `id` needed for update_release/delete_release.",
+      inputSchema: GetReleaseByTagSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const release = await client.getReleaseByTag(owner, repo, input.tag);
+      return {
+        content: [{ type: "text", text: JSON.stringify(release, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "create_release",
+    {
+      description:
+        "Create a release. `tag_name` is required (the Git tag, e.g. 'v1.2.0'); the tag is created if it does not exist. `name` is the human-readable title; `body` is the release notes (Markdown). `target_commitish` (branch or SHA) controls where the tag points (defaults to the repo's default branch). `draft` and `prerelease` are optional booleans. Returns the created release including its numeric `id`.",
+      inputSchema: CreateReleaseSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const release = await client.createRelease({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(release, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "update_release",
+    {
+      description:
+        "Update one release by numeric `id` (PATCH: only provided fields change). Edit `name` (title), `body` (release notes), toggle `draft`/`prerelease`, retarget via `target_commitish`, or rename the tag via `tag_name`. `tag_name` renames the underlying Git tag — use with care. Publish a draft by setting draft=false. Get the id from list_releases or get_release_by_tag first.",
+      inputSchema: UpdateReleaseSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const release = await client.updateRelease({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(release, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "delete_release",
+    {
+      description:
+        "PERMANENTLY delete a release by its numeric `id` (NOT the tag name). IRREVERSIBLE. Depending on Gitea configuration the underlying Git tag may or may not be deleted too. Confirm the id with the user first; prefer update_release({ draft: true }) to unpublish without deleting.",
+      inputSchema: DeleteReleaseSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      await client.deleteRelease(owner, repo, input.id);
+      return {
+        content: [{ type: "text", text: `Release #${input.id} deleted.` }],
       };
     },
   );

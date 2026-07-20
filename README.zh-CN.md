@@ -311,6 +311,21 @@ gitea-mcp
 > **说明：** 取消仅对进行中的运行有效；重试仅对已完成的运行有效。操作前务必先调用
 > `get_action_run` 确认当前状态，并向用户确认 `runId` 后再取消或重试。
 
+### Releases (版本发布)
+
+| 工具 | 说明 |
+|------|------|
+| `list_releases` | 列出仓库的版本发布（按 `draft`、`prerelease`、page/limit 筛选） |
+| `get_release` | 按数字 `id` 获取单个版本发布 |
+| `get_release_by_tag` | 按 `tag` 标签名获取版本发布（如 `v1.2.0`） |
+| `create_release` | 创建版本发布（`tag_name`、`name` 标题、`body` 发行说明、`target_commitish`、`draft`、`prerelease`） |
+| `update_release` | 更新版本发布的标题、内容、draft/prerelease 标记或重命名 tag |
+| `delete_release` | 按 `id` 删除版本发布——**不可逆** |
+
+> **说明：** 版本发布用数字 `id` 标识（来自 `list_releases` 或 `get_release_by_tag`），
+> 而非 tag 名。`create_release` 和 `update_release` 负责维护标题（`name`）与发行说明
+> （`body`）。删除版本发布时是否一并删除底层 Git tag 取决于 Gitea 配置。
+
 ### 仓库辅助 (Repository Helpers)
 
 | 工具 | 说明 |
