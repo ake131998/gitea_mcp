@@ -346,6 +346,68 @@ export interface ListActionRunsParams {
   limit?: number;
 }
 
+// ── Releases ──
+
+export interface ReleaseAttachment {
+  id: number;
+  name: string;
+  size: number;
+  download_count: number;
+  created_at: string;
+  uuid: string;
+  browser_download_url: string;
+  api_url?: string;
+}
+
+export interface Release {
+  id: number;
+  tag_name: string;
+  target_commitish: string;
+  name?: string;
+  body?: string;
+  draft: boolean;
+  prerelease: boolean;
+  created_at: string;
+  published_at?: string;
+  html_url: string;
+  url: string;
+  tag_commit?: { sha: string; url: string };
+  author?: User;
+  attachments?: ReleaseAttachment[];
+}
+
+export interface ListReleasesParams {
+  owner: string;
+  repo: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  page?: number;
+  limit?: number;
+}
+
+export interface CreateReleaseParams {
+  owner: string;
+  repo: string;
+  tag_name: string;
+  name?: string;
+  body?: string;
+  target_commitish?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
+export interface UpdateReleaseParams {
+  owner: string;
+  repo: string;
+  id: number;
+  tag_name?: string;
+  name?: string;
+  body?: string;
+  target_commitish?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
 export class GiteaClient {
   private baseUrl: string;
   private candidates: CandidateCredential[];
@@ -905,5 +967,58 @@ export class GiteaClient {
   async rerunActionRunFailedJobs(owner: string, repo: string, runId: number): Promise<void> {
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun-failed-jobs`;
     return this.request<void>("POST", path);
+  }
+
+  // ── Releases ──
+
+  async listReleases(params: ListReleasesParams): Promise<Release[]> {
+    const searchParams = new URLSearchParams();
+    if (params.draft !== undefined) searchParams.set("draft", String(params.draft));
+    if (params.prerelease !== undefined) searchParams.set("pre-release", String(params.prerelease));
+    if (params.page) searchParams.set("page", String(params.page));
+    if (params.limit) searchParams.set("limit", String(params.limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/releases${query ? `?${query}` : ""}`;
+    return this.request<Release[]>("GET", path);
+  }
+
+  async getRelease(owner: string, repo: string, id: number): Promise<Release> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/${id}`;
+    return this.request<Release>("GET", path);
+  }
+
+  async getReleaseByTag(owner: string, repo: string, tag: string): Promise<Release> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/tags/${encodeURIComponent(tag)}`;
+    return this.request<Release>("GET", path);
+  }
+
+  async createRelease(params: CreateReleaseParams): Promise<Release> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/releases`;
+    return this.request<Release>("POST", path, {
+      tag_name: params.tag_name,
+      name: params.name,
+      body: params.body,
+      target_commitish: params.target_commitish,
+      draft: params.draft,
+      prerelease: params.prerelease,
+    });
+  }
+
+  async updateRelease(params: UpdateReleaseParams): Promise<Release> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/releases/${params.id}`;
+    return this.request<Release>("PATCH", path, {
+      tag_name: params.tag_name,
+      name: params.name,
+      body: params.body,
+      target_commitish: params.target_commitish,
+      draft: params.draft,
+      prerelease: params.prerelease,
+    });
+  }
+
+  async deleteRelease(owner: string, repo: string, id: number): Promise<void> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases/${id}`;
+    return this.request<void>("DELETE", path);
   }
 }

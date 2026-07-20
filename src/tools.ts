@@ -314,6 +314,64 @@ export const ListPullFilesSchema = z.object({
   limit: z.number().int().min(1).max(100).optional().describe("Files per page"),
 });
 
+// ── Releases ──
+
+export const ListReleasesSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  draft: z.boolean().optional().describe("Filter by draft status (true = drafts only, false = published only)"),
+  prerelease: z
+    .boolean()
+    .optional()
+    .describe("Filter by prerelease status (true = prereleases only, false = stable releases only)"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Releases per page"),
+});
+
+export const GetReleaseSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  id: z.number().int().min(1).describe("Release ID (the numeric id from list_releases, NOT the tag name)"),
+});
+
+export const GetReleaseByTagSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  tag: z.string().describe("Git tag name the release was published from (e.g. 'v1.2.0')"),
+});
+
+export const CreateReleaseSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  tag_name: z.string().describe("Git tag name to create the release from (e.g. 'v1.2.0')"),
+  name: z.string().optional().describe("Release title (the human-readable name)"),
+  body: z.string().optional().describe("Release notes / content (supports Markdown)"),
+  target_commitish: z
+    .string()
+    .optional()
+    .describe("Branch or commit SHA the tag is created from (defaults to the repo default branch)"),
+  draft: z.boolean().optional().describe("Create as a draft (unpublished) release"),
+  prerelease: z.boolean().optional().describe("Create as a prerelease"),
+});
+
+export const UpdateReleaseSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  id: z.number().int().min(1).describe("Release ID (the numeric id from list_releases, NOT the tag name)"),
+  tag_name: z.string().optional().describe("New tag name (renames the tag; use with care)"),
+  name: z.string().optional().describe("New release title"),
+  body: z.string().optional().describe("New release notes / content (supports Markdown)"),
+  target_commitish: z.string().optional().describe("New target branch or commit SHA"),
+  draft: z.boolean().optional().describe("Draft status"),
+  prerelease: z.boolean().optional().describe("Prerelease status"),
+});
+
+export const DeleteReleaseSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  id: z.number().int().min(1).describe("Release ID (the numeric id from list_releases, NOT the tag name)"),
+});
+
 // ── Actions ──
 
 export const ListActionRunsSchema = z.object({

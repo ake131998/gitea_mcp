@@ -325,6 +325,22 @@ gitea-mcp
 > Always call `get_action_run` first to verify the current status, and confirm the
 > `runId` with the user before cancelling or rerunning.
 
+### Releases
+
+| Tool | Description |
+|------|-------------|
+| `list_releases` | List releases in a repo (filter by `draft`, `prerelease`, page/limit) |
+| `get_release` | Get a single release by its numeric `id` |
+| `get_release_by_tag` | Get a release by its `tag` name (e.g. `v1.2.0`) |
+| `create_release` | Create a release with `tag_name`, `name` (title), `body` (notes), `target_commitish`, `draft`, `prerelease` |
+| `update_release` | Update a release's title, notes, draft/prerelease flags, or rename the tag |
+| `delete_release` | Delete a release by `id` — **irreversible** |
+
+> **Note:** a release is identified by its numeric `id` (from `list_releases` or
+> `get_release_by_tag`), NOT the tag name. `create_release` and `update_release`
+> maintain the title (`name`) and release notes (`body`). Deleting a release may or
+> may not delete the underlying Git tag depending on the Gitea configuration.
+
 ### Repository Helpers
 
 | Tool | Description |
