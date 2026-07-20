@@ -21,6 +21,7 @@ const CLIENT_METHODS = [
   "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
   "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
   "listActionRuns", "getActionRun", "cancelActionRun", "rerunActionRun", "rerunActionRunFailedJobs",
+  "listReleases", "getRelease", "getReleaseByTag", "createRelease", "updateRelease", "deleteRelease",
 ] as const;
 
 type MockClient = Record<string, ReturnType<typeof vi.fn>>;
@@ -46,6 +47,8 @@ const EXPECTED_TOOLS = [
   "merge_pull_request", "is_pull_merged", "list_pull_commits", "list_pull_files",
   "list_action_runs", "get_action_run", "cancel_action_run",
   "rerun_action_run", "rerun_action_run_failed_jobs",
+  "list_releases", "get_release", "get_release_by_tag",
+  "create_release", "update_release", "delete_release",
   "resolve_repo", "list_my_repos", "gitea_status",
 ];
 
@@ -372,6 +375,69 @@ describe("tool handlers", () => {
     const result = await registeredTools(server as never)["rerun_action_run_failed_jobs"].handler({ runId: 12 });
     expect(mockClient.rerunActionRunFailedJobs).toHaveBeenCalledWith("o", "r", 12);
     expect(result.content[0].text).toContain("Failed jobs rerun started");
+  });
+
+  it("list_releases returns JSON of the client result", async () => {
+    const { createServer } = await import("../server.js");
+    const releases = [{ id: 1, tag_name: "v1.0.0" }];
+    mockClient.listReleases.mockResolvedValue(releases);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_releases"].handler({ prerelease: false });
+    expect(mockClient.listReleases).toHaveBeenCalledWith(expect.objectContaining({ owner: "o", repo: "r", prerelease: false }));
+    expect(JSON.parse(result.content[0].text)).toEqual(releases);
+  });
+
+  it("get_release forwards owner/repo/id and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const release = { id: 42, tag_name: "v1.2.0", name: "Title" };
+    mockClient.getRelease.mockResolvedValue(release);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["get_release"].handler({ id: 42 });
+    expect(mockClient.getRelease).toHaveBeenCalledWith("o", "r", 42);
+    expect(JSON.parse(result.content[0].text)).toEqual(release);
+  });
+
+  it("get_release_by_tag forwards owner/repo/tag and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const release = { id: 5, tag_name: "v1.0.0" };
+    mockClient.getReleaseByTag.mockResolvedValue(release);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["get_release_by_tag"].handler({ tag: "v1.0.0" });
+    expect(mockClient.getReleaseByTag).toHaveBeenCalledWith("o", "r", "v1.0.0");
+    expect(JSON.parse(result.content[0].text)).toEqual(release);
+  });
+
+  it("create_release forwards fields and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const release = { id: 1, tag_name: "v1.0.0" };
+    mockClient.createRelease.mockResolvedValue(release);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_release"].handler({
+      tag_name: "v1.0.0", name: "Title", body: "notes",
+    });
+    expect(mockClient.createRelease).toHaveBeenCalledWith(expect.objectContaining({
+      owner: "o", repo: "r", tag_name: "v1.0.0", name: "Title", body: "notes",
+    }));
+    expect(JSON.parse(result.content[0].text)).toEqual(release);
+  });
+
+  it("update_release forwards fields and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const release = { id: 7, name: "New" };
+    mockClient.updateRelease.mockResolvedValue(release);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["update_release"].handler({ id: 7, name: "New" });
+    expect(mockClient.updateRelease).toHaveBeenCalledWith(expect.objectContaining({ owner: "o", repo: "r", id: 7, name: "New" }));
+    expect(JSON.parse(result.content[0].text)).toEqual(release);
+  });
+
+  it("delete_release returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.deleteRelease.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["delete_release"].handler({ id: 3 });
+    expect(mockClient.deleteRelease).toHaveBeenCalledWith("o", "r", 3);
+    expect(result.content[0].text).toBe("Release #3 deleted.");
   });
 });
 
