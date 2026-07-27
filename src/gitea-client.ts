@@ -721,7 +721,24 @@ export class GiteaClient {
     labels: string[],
   ): Promise<Label[]> {
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/labels`;
-    return this.request<Label[]>("POST", path, { labels });
+
+    const current = await this.request<Label[]>("GET", path);
+    const existingNames = new Set(current.map((l) => l.name));
+
+    const toAdd: string[] = [];
+    const seen = new Set<string>();
+    for (const name of labels) {
+      if (!existingNames.has(name) && !seen.has(name)) {
+        toAdd.push(name);
+        seen.add(name);
+      }
+    }
+
+    if (toAdd.length === 0) {
+      return current;
+    }
+
+    return this.request<Label[]>("POST", path, { labels: toAdd });
   }
 
   async removeIssueLabel(
