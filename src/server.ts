@@ -343,7 +343,7 @@ export async function createServer(
     "add_issue_labels",
     {
       description:
-        "Add labels to an issue by its `index`. `labels` is an array of label NAMES (strings) — NOT ids. Get valid names from list_labels; a name that does not exist errors (404). ADDITIVE: existing labels are kept.",
+        "Add labels to an issue by its `index`. `labels` is an array of label NAMES (strings) — NOT ids. Get valid names from list_labels; a name that does not exist errors (404). ADDITIVE: existing labels are kept. Duplicate names (both within the input and against labels already on the issue) are filtered out automatically — only labels not yet present are added.",
       inputSchema: AddIssueLabelsSchema.shape,
     },
     async (input) => {

@@ -297,14 +297,62 @@ describe("GiteaClient", () => {
       expect(init.method).toBe("DELETE");
     });
 
-    it("addIssueLabels posts label names", async () => {
-      const fetchMock = stubFetch(buildResponse([]));
+    it("addIssueLabels posts label names not already present", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(buildResponse([]));
+      fetchMock.mockResolvedValueOnce(buildResponse([]));
+      vi.stubGlobal("fetch", fetchMock);
       const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
       await client.addIssueLabels("o", "r", 1, ["bug", "ui"]);
-      const { url, init } = lastCall(fetchMock);
-      expect(url).toBe("https://g/api/v1/repos/o/r/issues/1/labels");
-      expect(init.method).toBe("POST");
-      expect(JSON.parse(init.body as string)).toEqual({ labels: ["bug", "ui"] });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [getUrl, getInit] = fetchMock.mock.calls[0];
+      expect(getUrl).toBe("https://g/api/v1/repos/o/r/issues/1/labels");
+      expect((getInit as RequestInit).method).toBe("GET");
+      const [, postInit] = fetchMock.mock.calls[1];
+      expect((postInit as RequestInit).method).toBe("POST");
+      expect(JSON.parse((postInit as RequestInit).body as string)).toEqual({ labels: ["bug", "ui"] });
+    });
+
+    it("addIssueLabels filters out labels already on the issue", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(
+        buildResponse([{ id: 1, name: "bug", color: "ff0000" }]),
+      );
+      fetchMock.mockResolvedValueOnce(buildResponse([]));
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.addIssueLabels("o", "r", 1, ["bug", "ui"]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [, postInit] = fetchMock.mock.calls[1];
+      expect(JSON.parse((postInit as RequestInit).body as string)).toEqual({ labels: ["ui"] });
+    });
+
+    it("addIssueLabels deduplicates repeated names in the input", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(buildResponse([]));
+      fetchMock.mockResolvedValueOnce(buildResponse([]));
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.addIssueLabels("o", "r", 1, ["bug", "bug", "ui", "ui"]);
+      const [, postInit] = fetchMock.mock.calls[1];
+      expect(JSON.parse((postInit as RequestInit).body as string)).toEqual({ labels: ["bug", "ui"] });
+    });
+
+    it("addIssueLabels skips POST when all labels already exist", async () => {
+      const existing = [
+        { id: 1, name: "bug", color: "ff0000" },
+        { id: 2, name: "ui", color: "00ff00" },
+      ];
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(buildResponse(existing));
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.addIssueLabels("o", "r", 1, ["bug", "ui"]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [getUrl, getInit] = fetchMock.mock.calls[0];
+      expect(getUrl).toBe("https://g/api/v1/repos/o/r/issues/1/labels");
+      expect((getInit as RequestInit).method).toBe("GET");
+      expect(result).toEqual(existing);
     });
 
     it("removeIssueLabel deletes by label id", async () => {
