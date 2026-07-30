@@ -142,6 +142,60 @@ export const ClearIssueLabelsSchema = z.object({
   index: z.number().int().min(1).describe("Issue number"),
 });
 
+// ── Issue Dependencies ──
+
+export const ListIssueDependenciesSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Results per page"),
+});
+
+export const AddIssueDependencySchema = z.object({
+  owner: z.string().optional().describe("Repository owner of the issue that will be blocked / gain the dependency (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name of the issue that will be blocked / gain the dependency (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number that will gain the dependency (the dependent / blocked issue)"),
+  dep_index: z.number().int().min(1).describe("Issue number of the dependency to add (the blocker)"),
+  dep_owner: z.string().optional().describe("Repository owner of the dependency issue (defaults to the same owner as `owner`; cross-repo dependencies require the instance to enable AllowCrossRepositoryDependencies)"),
+  dep_repo: z.string().optional().describe("Repository name of the dependency issue (defaults to the same repo as `repo`; cross-repo dependencies require the instance to enable AllowCrossRepositoryDependencies)"),
+});
+
+export const RemoveIssueDependencySchema = z.object({
+  owner: z.string().optional().describe("Repository owner of the issue losing the dependency (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name of the issue losing the dependency (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number losing the dependency (the dependent / blocked issue)"),
+  dep_index: z.number().int().min(1).describe("Issue number of the dependency to remove (the blocker)"),
+  dep_owner: z.string().optional().describe("Repository owner of the dependency issue (defaults to the same owner as `owner`)"),
+  dep_repo: z.string().optional().describe("Repository name of the dependency issue (defaults to the same repo as `repo`)"),
+});
+
+export const ListIssueBlocksSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  page: z.number().int().min(1).optional().describe("Page number"),
+  limit: z.number().int().min(1).max(100).optional().describe("Results per page"),
+});
+
+export const AddIssueBlockSchema = z.object({
+  owner: z.string().optional().describe("Repository owner of the issue that will block the other (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name of the issue that will block the other (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number that will block the dependency (the blocker)"),
+  dep_index: z.number().int().min(1).describe("Issue number to block (it becomes dependent on `index`; the blocked issue)"),
+  dep_owner: z.string().optional().describe("Repository owner of the issue to block (defaults to the same owner as `owner`; cross-repo dependencies require the instance to enable AllowCrossRepositoryDependencies)"),
+  dep_repo: z.string().optional().describe("Repository name of the issue to block (defaults to the same repo as `repo`; cross-repo dependencies require the instance to enable AllowCrossRepositoryDependencies)"),
+});
+
+export const RemoveIssueBlockSchema = z.object({
+  owner: z.string().optional().describe("Repository owner of the issue that currently blocks the other (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name of the issue that currently blocks the other (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number that currently blocks the dependency (the blocker)"),
+  dep_index: z.number().int().min(1).describe("Issue number to unblock (it stops being dependent on `index`)"),
+  dep_owner: z.string().optional().describe("Repository owner of the issue to unblock (defaults to the same owner as `owner`)"),
+  dep_repo: z.string().optional().describe("Repository name of the issue to unblock (defaults to the same repo as `repo`)"),
+});
+
 export const ListMilestonesSchema = z.object({
   owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
   repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),

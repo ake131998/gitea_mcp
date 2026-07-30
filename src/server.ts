@@ -21,6 +21,12 @@ import {
   RemoveIssueLabelSchema,
   ReplaceIssueLabelsSchema,
   ClearIssueLabelsSchema,
+  ListIssueDependenciesSchema,
+  AddIssueDependencySchema,
+  RemoveIssueDependencySchema,
+  ListIssueBlocksSchema,
+  AddIssueBlockSchema,
+  RemoveIssueBlockSchema,
   ListMilestonesSchema,
   GetMilestoneSchema,
   CreateMilestoneSchema,
@@ -405,6 +411,132 @@ export async function createServer(
       await client.clearIssueLabels(owner, repo, input.index);
       return {
         content: [{ type: "text", text: `All labels cleared from issue #${input.index}.` }],
+      };
+    },
+  );
+
+  // ── Issue Dependencies ──
+
+  server.registerTool(
+    "list_issue_dependencies",
+    {
+      description:
+        "List the issues that BLOCK this issue (its 'blocked by' dependencies). Paginated: page is 1-based, limit <= 100; keep paging until a page returns fewer than `limit`. Returns 404 if the repo has not enabled issue dependencies (`enable_issue_dependencies`). Use list_issue_blocks for the reverse direction (issues this issue blocks).",
+      inputSchema: ListIssueDependenciesSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const deps = await client.listIssueDependencies({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(deps, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "add_issue_dependency",
+    {
+      description:
+        "Make an issue depend on (be blocked by) another issue. `index` is the issue that gains the dependency; `dep_index` is the blocker. `dep_owner`/`dep_repo` default to the same repo but may point at another repo (requires the instance to enable AllowCrossRepositoryDependencies). Returns the target issue (the dependent one).",
+      inputSchema: AddIssueDependencySchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const issue = await client.addIssueDependency({
+        owner,
+        repo,
+        index: input.index,
+        depIndex: input.dep_index,
+        depOwner: input.dep_owner,
+        depRepo: input.dep_repo,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "remove_issue_dependency",
+    {
+      description:
+        "Remove a dependency so `index` is no longer blocked by `dep_index`. `dep_owner`/`dep_repo` default to the same repo. Returns the target issue (the formerly dependent one). 404 if dependencies are not enabled on the repo.",
+      inputSchema: RemoveIssueDependencySchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const issue = await client.removeIssueDependency({
+        owner,
+        repo,
+        index: input.index,
+        depIndex: input.dep_index,
+        depOwner: input.dep_owner,
+        depRepo: input.dep_repo,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_issue_blocks",
+    {
+      description:
+        "List the issues that are BLOCKED BY this issue (its 'blocking' dependents). Paginated: page is 1-based, limit <= 100; keep paging until a page returns fewer than `limit`. Reverse direction of list_issue_dependencies (which lists the issues that block this one).",
+      inputSchema: ListIssueBlocksSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const blocks = await client.listIssueBlocks({ ...input, owner, repo });
+      return {
+        content: [{ type: "text", text: JSON.stringify(blocks, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "add_issue_block",
+    {
+      description:
+        "Make an issue block another issue. `index` is the blocker; `dep_index` becomes blocked by (dependent on) `index`. `dep_owner`/`dep_repo` default to the same repo but may point at another repo (requires AllowCrossRepositoryDependencies). Returns the blocker issue.",
+      inputSchema: AddIssueBlockSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const issue = await client.addIssueBlock({
+        owner,
+        repo,
+        index: input.index,
+        depIndex: input.dep_index,
+        depOwner: input.dep_owner,
+        depRepo: input.dep_repo,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "remove_issue_block",
+    {
+      description:
+        "Remove a block so `index` no longer blocks `dep_index`. `dep_owner`/`dep_repo` default to the same repo. Returns the blocker issue. 404 if dependencies are not enabled on the repo.",
+      inputSchema: RemoveIssueBlockSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const issue = await client.removeIssueBlock({
+        owner,
+        repo,
+        index: input.index,
+        depIndex: input.dep_index,
+        depOwner: input.dep_owner,
+        depRepo: input.dep_repo,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
       };
     },
   );

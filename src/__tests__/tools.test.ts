@@ -25,6 +25,12 @@ import {
   UpdateWikiPageSchema,
   DeleteWikiPageSchema,
   ListWikiRevisionsSchema,
+  ListIssueDependenciesSchema,
+  AddIssueDependencySchema,
+  RemoveIssueDependencySchema,
+  ListIssueBlocksSchema,
+  AddIssueBlockSchema,
+  RemoveIssueBlockSchema,
 } from "../tools.js";
 
 describe("ListIssuesSchema", () => {
@@ -429,5 +435,87 @@ describe("ListWikiRevisionsSchema", () => {
     const result = ListWikiRevisionsSchema.parse({ pageName: "Home", page: 3 });
     expect(result.pageName).toBe("Home");
     expect(result.page).toBe(3);
+  });
+});
+
+describe("ListIssueDependenciesSchema", () => {
+  it("requires index", () => {
+    const result = ListIssueDependenciesSchema.safeParse({ owner: "o", repo: "r" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index with optional pagination", () => {
+    const result = ListIssueDependenciesSchema.parse({ index: 7, page: 2, limit: 50 });
+    expect(result.index).toBe(7);
+    expect(result.page).toBe(2);
+    expect(result.limit).toBe(50);
+  });
+});
+
+describe("AddIssueDependencySchema", () => {
+  it("requires index and dep_index", () => {
+    const result = AddIssueDependencySchema.safeParse({ index: 7 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts same-repo defaults and cross-repo targets", () => {
+    const sameRepo = AddIssueDependencySchema.parse({ index: 7, dep_index: 9 });
+    expect(sameRepo.dep_index).toBe(9);
+    expect(sameRepo.dep_owner).toBeUndefined();
+
+    const crossRepo = AddIssueDependencySchema.parse({
+      index: 7, dep_index: 9, dep_owner: "other", dep_repo: "proj",
+    });
+    expect(crossRepo.dep_owner).toBe("other");
+    expect(crossRepo.dep_repo).toBe("proj");
+  });
+});
+
+describe("RemoveIssueDependencySchema", () => {
+  it("requires index and dep_index", () => {
+    expect(RemoveIssueDependencySchema.safeParse({ index: 7 }).success).toBe(false);
+    expect(RemoveIssueDependencySchema.safeParse({ dep_index: 9 }).success).toBe(false);
+  });
+
+  it("accepts index + dep_index", () => {
+    const result = RemoveIssueDependencySchema.parse({ index: 7, dep_index: 9 });
+    expect(result.index).toBe(7);
+    expect(result.dep_index).toBe(9);
+  });
+});
+
+describe("ListIssueBlocksSchema", () => {
+  it("requires index", () => {
+    expect(ListIssueBlocksSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("accepts index with optional pagination", () => {
+    const result = ListIssueBlocksSchema.parse({ index: 7 });
+    expect(result.index).toBe(7);
+  });
+});
+
+describe("AddIssueBlockSchema", () => {
+  it("requires index and dep_index", () => {
+    expect(AddIssueBlockSchema.safeParse({ index: 7 }).success).toBe(false);
+  });
+
+  it("accepts index + dep_index with optional dep owner/repo", () => {
+    const result = AddIssueBlockSchema.parse({ index: 7, dep_index: 9, dep_owner: "x" });
+    expect(result.dep_index).toBe(9);
+    expect(result.dep_owner).toBe("x");
+  });
+});
+
+describe("RemoveIssueBlockSchema", () => {
+  it("requires index and dep_index", () => {
+    expect(RemoveIssueBlockSchema.safeParse({ index: 7 }).success).toBe(false);
+    expect(RemoveIssueBlockSchema.safeParse({ dep_index: 9 }).success).toBe(false);
+  });
+
+  it("accepts index + dep_index", () => {
+    const result = RemoveIssueBlockSchema.parse({ index: 7, dep_index: 9 });
+    expect(result.index).toBe(7);
+    expect(result.dep_index).toBe(9);
   });
 });

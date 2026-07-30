@@ -15,6 +15,8 @@ const CLIENT_METHODS = [
   "listComments", "createComment", "updateComment", "deleteComment",
   "listLabels", "createLabel", "updateLabel", "deleteLabel",
   "addIssueLabels", "removeIssueLabel", "replaceIssueLabels", "clearIssueLabels",
+  "listIssueDependencies", "addIssueDependency", "removeIssueDependency",
+  "listIssueBlocks", "addIssueBlock", "removeIssueBlock",
   "listMilestones", "getMilestone", "createMilestone", "updateMilestone", "deleteMilestone",
   "listMyRepos", "getCredentialStatus",
   "listTopics", "replaceTopics", "addTopic", "removeTopic",
@@ -43,6 +45,8 @@ const EXPECTED_TOOLS = [
   "list_comments", "create_comment", "update_comment", "delete_comment",
   "list_labels", "create_label", "update_label", "delete_label",
   "add_issue_labels", "remove_issue_label", "replace_issue_labels", "clear_issue_labels",
+  "list_issue_dependencies", "add_issue_dependency", "remove_issue_dependency",
+  "list_issue_blocks", "add_issue_block", "remove_issue_block",
   "list_milestones", "get_milestone", "create_milestone", "update_milestone", "delete_milestone",
   "list_topics", "replace_topics", "add_topic", "remove_topic",
   "list_pull_requests", "get_pull_request", "create_pull_request", "update_pull_request",
@@ -520,6 +524,82 @@ describe("tool handlers", () => {
     const result = await registeredTools(server as never)["list_wiki_revisions"].handler({ pageName: "Home", page: 2 });
     expect(mockClient.listWikiRevisions).toHaveBeenCalledWith("o", "r", "Home", 2);
     expect(JSON.parse(result.content[0].text)).toEqual(revisions);
+  });
+
+  it("list_issue_dependencies spreads owner/repo and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const deps = [{ number: 9, title: "blocker" }];
+    mockClient.listIssueDependencies.mockResolvedValue(deps);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_issue_dependencies"].handler({ index: 7, page: 1, limit: 50 });
+    expect(mockClient.listIssueDependencies).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", index: 7, page: 1, limit: 50 }),
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual(deps);
+  });
+
+  it("add_issue_dependency maps dep_* fields into the client params", async () => {
+    const { createServer } = await import("../server.js");
+    const issue = { number: 7, title: "dependent" };
+    mockClient.addIssueDependency.mockResolvedValue(issue);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["add_issue_dependency"].handler({
+      index: 7, dep_index: 9, dep_owner: "other", dep_repo: "proj",
+    });
+    expect(mockClient.addIssueDependency).toHaveBeenCalledWith({
+      owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: "other", depRepo: "proj",
+    });
+    expect(JSON.parse(result.content[0].text)).toEqual(issue);
+  });
+
+  it("remove_issue_dependency maps dep_* fields and forwards undefined owner/repo", async () => {
+    const { createServer } = await import("../server.js");
+    const issue = { number: 7, title: "dependent" };
+    mockClient.removeIssueDependency.mockResolvedValue(issue);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["remove_issue_dependency"].handler({ index: 7, dep_index: 9 });
+    expect(mockClient.removeIssueDependency).toHaveBeenCalledWith({
+      owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: undefined, depRepo: undefined,
+    });
+    expect(JSON.parse(result.content[0].text)).toEqual(issue);
+  });
+
+  it("list_issue_blocks spreads owner/repo and returns JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const blocks = [{ number: 9, title: "blocked" }];
+    mockClient.listIssueBlocks.mockResolvedValue(blocks);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_issue_blocks"].handler({ index: 7 });
+    expect(mockClient.listIssueBlocks).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "o", repo: "r", index: 7 }),
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual(blocks);
+  });
+
+  it("add_issue_block maps dep_* fields into the client params", async () => {
+    const { createServer } = await import("../server.js");
+    const issue = { number: 7, title: "blocker" };
+    mockClient.addIssueBlock.mockResolvedValue(issue);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["add_issue_block"].handler({ index: 7, dep_index: 9 });
+    expect(mockClient.addIssueBlock).toHaveBeenCalledWith({
+      owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: undefined, depRepo: undefined,
+    });
+    expect(JSON.parse(result.content[0].text)).toEqual(issue);
+  });
+
+  it("remove_issue_block maps dep_* fields into the client params", async () => {
+    const { createServer } = await import("../server.js");
+    const issue = { number: 7, title: "blocker" };
+    mockClient.removeIssueBlock.mockResolvedValue(issue);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["remove_issue_block"].handler({
+      index: 7, dep_index: 9, dep_owner: "other", dep_repo: "proj",
+    });
+    expect(mockClient.removeIssueBlock).toHaveBeenCalledWith({
+      owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: "other", depRepo: "proj",
+    });
+    expect(JSON.parse(result.content[0].text)).toEqual(issue);
   });
 });
 

@@ -146,6 +146,29 @@ export interface ListIssuesParams {
   limit?: number;
 }
 
+export interface ListIssueDependenciesParams {
+  owner: string;
+  repo: string;
+  index: number;
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * Identifies the dependency/block relationship target. `owner` / `repo` / `index`
+ * locate the issue in the request path; `depIndex` (+ optional `depOwner` /
+ * `depRepo`, defaulting to the same repo) locate the `IssueMeta` body issue, so
+ * cross-repository dependencies are supported when the instance allows them.
+ */
+export interface IssueDependencyTargetParams {
+  owner: string;
+  repo: string;
+  index: number;
+  depIndex: number;
+  depOwner?: string;
+  depRepo?: string;
+}
+
 export interface SearchIssuesParams {
   query?: string;
   type?: "issues" | "pulls";
@@ -709,6 +732,67 @@ export class GiteaClient {
     const query = searchParams.toString();
     const path = `/repos/issues/search${query ? `?${query}` : ""}`;
     return this.request<Issue[]>("GET", path);
+  }
+
+  // ── Issue Dependencies ──
+
+  /**
+   * Builds the `IssueMeta` body for a dependency/block mutation. The body issue
+   * (`depIndex`) defaults to the same repo as the path issue when its owner/repo
+   * are not provided — the common same-repo case — but keeps cross-repo support.
+   */
+  private issueMetaBody(params: IssueDependencyTargetParams): { index: number; owner: string; repo: string } {
+    return {
+      index: params.depIndex,
+      owner: params.depOwner ?? params.owner,
+      repo: params.depRepo ?? params.repo,
+    };
+  }
+
+  /** List the issues that BLOCK this issue (its "blocked by" dependencies). */
+  async listIssueDependencies(params: ListIssueDependenciesParams): Promise<Issue[]> {
+    const searchParams = new URLSearchParams();
+    if (params.page) searchParams.set("page", String(params.page));
+    if (params.limit) searchParams.set("limit", String(params.limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/dependencies${query ? `?${query}` : ""}`;
+    return this.request<Issue[]>("GET", path);
+  }
+
+  /** Make `index` depend on (be blocked by) `depIndex`. Returns the target issue. */
+  async addIssueDependency(params: IssueDependencyTargetParams): Promise<Issue> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/dependencies`;
+    return this.request<Issue>("POST", path, this.issueMetaBody(params));
+  }
+
+  /** Remove the dependency where `index` is blocked by `depIndex`. Returns the target issue. */
+  async removeIssueDependency(params: IssueDependencyTargetParams): Promise<Issue> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/dependencies`;
+    return this.request<Issue>("DELETE", path, this.issueMetaBody(params));
+  }
+
+  /** List the issues that are BLOCKED BY this issue (its "blocking" dependents). */
+  async listIssueBlocks(params: ListIssueDependenciesParams): Promise<Issue[]> {
+    const searchParams = new URLSearchParams();
+    if (params.page) searchParams.set("page", String(params.page));
+    if (params.limit) searchParams.set("limit", String(params.limit));
+
+    const query = searchParams.toString();
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/blocks${query ? `?${query}` : ""}`;
+    return this.request<Issue[]>("GET", path);
+  }
+
+  /** Make `depIndex` be blocked by `index`. Returns the path (blocker) issue. */
+  async addIssueBlock(params: IssueDependencyTargetParams): Promise<Issue> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/blocks`;
+    return this.request<Issue>("POST", path, this.issueMetaBody(params));
+  }
+
+  /** Unblock `depIndex` from being blocked by `index`. Returns the path (blocker) issue. */
+  async removeIssueBlock(params: IssueDependencyTargetParams): Promise<Issue> {
+    const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/blocks`;
+    return this.request<Issue>("DELETE", path, this.issueMetaBody(params));
   }
 
   async listComments(
