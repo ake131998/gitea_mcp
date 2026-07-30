@@ -1169,4 +1169,103 @@ describe("GiteaClient", () => {
       expect(revisions).toEqual({ commits: [], count: 0 });
     });
   });
+
+  describe("issue dependencies", () => {
+    it("listIssueDependencies builds the dependencies path with pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listIssueDependencies({ owner: "own", repo: "rp", index: 7, page: 2, limit: 50 });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/own/rp/issues/7/dependencies?page=2&limit=50");
+      expect(init.method).toBe("GET");
+    });
+
+    it("listIssueDependencies omits the query without pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listIssueDependencies({ owner: "o", repo: "r", index: 7 });
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/issues/7/dependencies");
+    });
+
+    it("addIssueDependency POSTs an IssueMeta body and returns the target issue", async () => {
+      const target = { number: 7, title: "dependent" };
+      const fetchMock = stubFetch(buildResponse(target, 201, "Created"));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const issue = await client.addIssueDependency({
+        owner: "o", repo: "r", index: 7, depIndex: 9,
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/7/dependencies");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({ index: 9, owner: "o", repo: "r" });
+      expect(issue).toEqual(target);
+    });
+
+    it("addIssueDependency uses depOwner/depRepo for a cross-repo dependency", async () => {
+      const fetchMock = stubFetch(buildResponse({}));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.addIssueDependency({
+        owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: "other", depRepo: "proj",
+      });
+      expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({
+        index: 9, owner: "other", repo: "proj",
+      });
+    });
+
+    it("removeIssueDependency sends DELETE with an IssueMeta body", async () => {
+      const target = { number: 7, title: "dependent" };
+      const fetchMock = stubFetch(buildResponse(target));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const issue = await client.removeIssueDependency({
+        owner: "o", repo: "r", index: 7, depIndex: 9,
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/7/dependencies");
+      expect(init.method).toBe("DELETE");
+      expect(JSON.parse(init.body as string)).toEqual({ index: 9, owner: "o", repo: "r" });
+      expect(issue).toEqual(target);
+    });
+
+    it("listIssueBlocks builds the blocks path with pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listIssueBlocks({ owner: "own", repo: "rp", index: 7, page: 1, limit: 25 });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/own/rp/issues/7/blocks?page=1&limit=25");
+      expect(init.method).toBe("GET");
+    });
+
+    it("listIssueBlocks omits the query without pagination", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listIssueBlocks({ owner: "o", repo: "r", index: 7 });
+      expect(lastCall(fetchMock).url).toBe("https://g/api/v1/repos/o/r/issues/7/blocks");
+    });
+
+    it("addIssueBlock POSTs to the blocks path with an IssueMeta body", async () => {
+      const blocker = { number: 7, title: "blocker" };
+      const fetchMock = stubFetch(buildResponse(blocker, 201, "Created"));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const issue = await client.addIssueBlock({
+        owner: "o", repo: "r", index: 7, depIndex: 9, depOwner: "other", depRepo: "proj",
+      });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/7/blocks");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(init.body as string)).toEqual({ index: 9, owner: "other", repo: "proj" });
+      expect(issue).toEqual(blocker);
+    });
+
+    it("removeIssueBlock sends DELETE to the blocks path with an IssueMeta body", async () => {
+      const blocker = { number: 7, title: "blocker" };
+      const fetchMock = stubFetch(buildResponse(blocker));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const issue = await client.removeIssueBlock({ owner: "o", repo: "r", index: 7, depIndex: 9 });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/7/blocks");
+      expect(init.method).toBe("DELETE");
+      expect(JSON.parse(init.body as string)).toEqual({ index: 9, owner: "o", repo: "r" });
+      expect(issue).toEqual(blocker);
+    });
+  });
 });

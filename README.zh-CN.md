@@ -240,6 +240,21 @@ gitea-mcp
 | `delete_issue` | 按 `index` 删除议题 |
 | `search_issues` | 跨仓库搜索议题，支持 `query`、`type`、`state`、`labels` |
 
+### 议题依赖 (Issue Dependencies)
+
+| 工具 | 说明 |
+|------|------|
+| `list_issue_dependencies` | 列出阻塞某议题的议题（`blocked by`），支持 page/limit 分页 |
+| `add_issue_dependency` | 让一个议题依赖于（被阻塞于）另一个议题 — `dep_index` 为阻塞者 |
+| `remove_issue_dependency` | 移除依赖，使议题不再被 `dep_index` 阻塞 |
+| `list_issue_blocks` | 列出被某议题阻塞的议题（`blocking`），支持 page/limit 分页 |
+| `add_issue_block` | 让一个议题阻塞另一个议题 — `index` 为阻塞者，`dep_index` 被阻塞 |
+| `remove_issue_block` | 移除阻塞，使 `dep_index` 不再被 `index` 阻塞 |
+
+> **说明：** 依赖类工具要求仓库开启 `enable_issue_dependencies`（返回 404 表示未开启）。
+> `dep_owner` / `dep_repo` 默认与该议题同库，也可指向其它仓库（需实例开启
+> `AllowCrossRepositoryDependencies`）。变更类工具返回路径议题的 JSON。
+
 ### 评论 (Comments)
 
 | 工具 | 说明 |

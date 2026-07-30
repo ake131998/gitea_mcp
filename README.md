@@ -253,6 +253,22 @@ gitea-mcp
 | `delete_issue` | Delete an issue by `index` |
 | `search_issues` | Search across repositories by `query`, `type`, `state`, `labels` |
 
+### Issue Dependencies
+
+| Tool | Description |
+|------|-------------|
+| `list_issue_dependencies` | List the issues that BLOCK an issue (`blocked by`), with page/limit |
+| `add_issue_dependency` | Make an issue depend on (be blocked by) another issue — `dep_index` is the blocker |
+| `remove_issue_dependency` | Remove a dependency so an issue is no longer blocked by `dep_index` |
+| `list_issue_blocks` | List the issues that are BLOCKED BY an issue (`blocking`), with page/limit |
+| `add_issue_block` | Make an issue block another issue — `index` is the blocker, `dep_index` is blocked |
+| `remove_issue_block` | Remove a block so `dep_index` is no longer blocked by `index` |
+
+> **Note:** dependency tools require the repo to enable `enable_issue_dependencies`
+> (a 404 means it is off). `dep_owner` / `dep_repo` default to the same repo as the
+> issue but may point at another repo (the instance must enable
+> `AllowCrossRepositoryDependencies`). Mutations return the path issue as JSON.
+
 ### Comments
 
 | Tool | Description |
