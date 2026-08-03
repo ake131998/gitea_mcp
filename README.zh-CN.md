@@ -250,6 +250,7 @@ gitea-mcp
 | `list_issue_blocks` | 列出被某议题阻塞的议题（`blocking`），支持 page/limit 分页 |
 | `add_issue_block` | 让一个议题阻塞另一个议题 — `index` 为阻塞者，`dep_index` 被阻塞 |
 | `remove_issue_block` | 移除阻塞，使 `dep_index` 不再被 `index` 阻塞 |
+| `check_issue_blocked` | 检查议题是否被未关闭的依赖阻塞 — 一次调用返回 `blocked`、`blockers`、`total_dependencies`、`open_blockers`（内部聚合 `list_issue_dependencies`） |
 
 > **说明：** 依赖类工具要求仓库开启 `enable_issue_dependencies`（返回 404 表示未开启）。
 > `dep_owner` / `dep_repo` 默认与该议题同库，也可指向其它仓库（需实例开启
