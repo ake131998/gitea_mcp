@@ -1,0 +1,23 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  TypeScript ESM project ("type": "module", module: Node16, target ES2022, strict).
+  Node >= 24 (global fetch, no HTTP client deps). MCP server built on
+  @modelcontextprotocol/sdk (McpServer + StdioServerTransport) with zod input schemas.
+  Files: src/tools.ts (schemas only), src/gitea-client.ts (REST client), src/server.ts
+  (MCP composition), src/cli.ts (entry). Relative imports use the .js extension.
+  Unit tests with vitest under src/__tests__/ (stub global.fetch, hermetic).
+  Verification: make lint -> make build -> make test; Conventional Commits.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

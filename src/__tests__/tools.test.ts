@@ -31,6 +31,7 @@ import {
   ListIssueBlocksSchema,
   AddIssueBlockSchema,
   RemoveIssueBlockSchema,
+  CheckIssueBlockedSchema,
 } from "../tools.js";
 
 describe("ListIssuesSchema", () => {
@@ -449,6 +450,32 @@ describe("ListIssueDependenciesSchema", () => {
     expect(result.index).toBe(7);
     expect(result.page).toBe(2);
     expect(result.limit).toBe(50);
+  });
+});
+
+describe("CheckIssueBlockedSchema", () => {
+  it("requires index", () => {
+    const result = CheckIssueBlockedSchema.safeParse({ owner: "o", repo: "r" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a non-positive index", () => {
+    const result = CheckIssueBlockedSchema.safeParse({ index: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index with optional owner/repo", () => {
+    const result = CheckIssueBlockedSchema.parse({ owner: "o", repo: "r", index: 42 });
+    expect(result.index).toBe(42);
+    expect(result.owner).toBe("o");
+    expect(result.repo).toBe("r");
+  });
+
+  it("exposes no page/limit parameters (unknown keys are stripped)", () => {
+    const result = CheckIssueBlockedSchema.parse({ index: 42, page: 1, limit: 50 });
+    expect(result.index).toBe(42);
+    expect(result).not.toHaveProperty("page");
+    expect(result).not.toHaveProperty("limit");
   });
 });
 

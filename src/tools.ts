@@ -196,6 +196,12 @@ export const RemoveIssueBlockSchema = z.object({
   dep_repo: z.string().optional().describe("Repository name of the issue to unblock (defaults to the same repo as `repo`)"),
 });
 
+export const CheckIssueBlockedSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number to check for blocking dependencies"),
+});
+
 export const ListMilestonesSchema = z.object({
   owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
   repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),

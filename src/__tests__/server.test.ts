@@ -16,7 +16,7 @@ const CLIENT_METHODS = [
   "listLabels", "createLabel", "updateLabel", "deleteLabel",
   "addIssueLabels", "removeIssueLabel", "replaceIssueLabels", "clearIssueLabels",
   "listIssueDependencies", "addIssueDependency", "removeIssueDependency",
-  "listIssueBlocks", "addIssueBlock", "removeIssueBlock",
+  "listIssueBlocks", "addIssueBlock", "removeIssueBlock", "checkIssueBlocked",
   "listMilestones", "getMilestone", "createMilestone", "updateMilestone", "deleteMilestone",
   "listMyRepos", "getCredentialStatus",
   "listTopics", "replaceTopics", "addTopic", "removeTopic",
@@ -46,7 +46,7 @@ const EXPECTED_TOOLS = [
   "list_labels", "create_label", "update_label", "delete_label",
   "add_issue_labels", "remove_issue_label", "replace_issue_labels", "clear_issue_labels",
   "list_issue_dependencies", "add_issue_dependency", "remove_issue_dependency",
-  "list_issue_blocks", "add_issue_block", "remove_issue_block",
+  "list_issue_blocks", "add_issue_block", "remove_issue_block", "check_issue_blocked",
   "list_milestones", "get_milestone", "create_milestone", "update_milestone", "delete_milestone",
   "list_topics", "replace_topics", "add_topic", "remove_topic",
   "list_pull_requests", "get_pull_request", "create_pull_request", "update_pull_request",
@@ -536,6 +536,22 @@ describe("tool handlers", () => {
       expect.objectContaining({ owner: "o", repo: "r", index: 7, page: 1, limit: 50 }),
     );
     expect(JSON.parse(result.content[0].text)).toEqual(deps);
+  });
+
+  it("check_issue_blocked delegates to the client and returns the verdict JSON", async () => {
+    const { createServer } = await import("../server.js");
+    const verdict = {
+      index: 42,
+      blocked: true,
+      blockers: [{ number: 7, title: "blocker", state: "open" }],
+      total_dependencies: 1,
+      open_blockers: 1,
+    };
+    mockClient.checkIssueBlocked.mockResolvedValue(verdict);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["check_issue_blocked"].handler({ index: 42 });
+    expect(mockClient.checkIssueBlocked).toHaveBeenCalledWith({ owner: "o", repo: "r", index: 42 });
+    expect(JSON.parse(result.content[0].text)).toEqual(verdict);
   });
 
   it("add_issue_dependency maps dep_* fields into the client params", async () => {

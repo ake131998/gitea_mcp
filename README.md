@@ -263,6 +263,7 @@ gitea-mcp
 | `list_issue_blocks` | List the issues that are BLOCKED BY an issue (`blocking`), with page/limit |
 | `add_issue_block` | Make an issue block another issue — `index` is the blocker, `dep_index` is blocked |
 | `remove_issue_block` | Remove a block so `dep_index` is no longer blocked by `index` |
+| `check_issue_blocked` | Check whether an issue is blocked by open dependencies — returns `blocked`, `blockers`, `total_dependencies`, `open_blockers` in one call (aggregates `list_issue_dependencies` internally) |
 
 > **Note:** dependency tools require the repo to enable `enable_issue_dependencies`
 > (a 404 means it is off). `dep_owner` / `dep_repo` default to the same repo as the

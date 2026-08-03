@@ -1267,5 +1267,89 @@ describe("GiteaClient", () => {
       expect(JSON.parse(init.body as string)).toEqual({ index: 9, owner: "o", repo: "r" });
       expect(issue).toEqual(blocker);
     });
+
+    describe("checkIssueBlocked", () => {
+      it("returns not blocked when there are no dependencies", async () => {
+        stubFetch(buildResponse([]));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 });
+        expect(result).toEqual({
+          index: 42,
+          blocked: false,
+          blockers: [],
+          total_dependencies: 0,
+          open_blockers: 0,
+        });
+      });
+
+      it("returns blocked when a dependency is open", async () => {
+        const open = { number: 7, title: "blocker", state: "open" };
+        stubFetch(buildResponse([open]));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 });
+        expect(result.blocked).toBe(true);
+        expect(result.blockers).toEqual([open]);
+        expect(result.total_dependencies).toBe(1);
+        expect(result.open_blockers).toBe(1);
+      });
+
+      it("returns not blocked when every dependency is closed", async () => {
+        stubFetch(buildResponse([
+          { number: 7, title: "a", state: "closed" },
+          { number: 8, title: "b", state: "closed" },
+        ]));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 });
+        expect(result.blocked).toBe(false);
+        expect(result.blockers).toEqual([]);
+        expect(result.total_dependencies).toBe(2);
+        expect(result.open_blockers).toBe(0);
+      });
+
+      it("filters mixed states, keeping only open blockers", async () => {
+        stubFetch(buildResponse([
+          { number: 7, title: "open blocker", state: "open" },
+          { number: 8, title: "done", state: "closed" },
+          { number: 9, title: "in review", state: "review" },
+        ]));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 });
+        expect(result.blocked).toBe(true);
+        expect(result.blockers).toEqual([
+          { number: 7, title: "open blocker", state: "open" },
+          { number: 9, title: "in review", state: "review" },
+        ]);
+        expect(result.total_dependencies).toBe(3);
+        expect(result.open_blockers).toBe(2);
+      });
+
+      it("paginates through the dependency endpoint until a short page", async () => {
+        const fullPage = Array.from({ length: 100 }, (_, i) => ({
+          number: i + 1, title: `dep-${i + 1}`, state: i === 0 ? "open" : "closed",
+        }));
+        const fetchMock = stubFetch(buildResponse([]));
+        fetchMock
+          .mockResolvedValueOnce(buildResponse(fullPage))
+          .mockResolvedValueOnce(buildResponse([{ number: 101, title: "last", state: "open" }]));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        const [first, second] = fetchMock.mock.calls.map(([url]) => url as string);
+        expect(first).toBe("https://g/api/v1/repos/o/r/issues/42/dependencies?page=1&limit=100");
+        expect(second).toBe("https://g/api/v1/repos/o/r/issues/42/dependencies?page=2&limit=100");
+        expect(result.total_dependencies).toBe(101);
+        expect(result.blocked).toBe(true);
+        expect(result.blockers.map((b) => b.number)).toEqual([1, 101]);
+        expect(result.open_blockers).toBe(2);
+      });
+
+      it("propagates a 404 from the dependency endpoint", async () => {
+        stubFetch(buildResponse("dependencies disabled", 404, "Not Found"));
+        const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+        await expect(client.checkIssueBlocked({ owner: "o", repo: "r", index: 42 })).rejects.toThrow(
+          "Gitea API error (404): dependencies disabled",
+        );
+      });
+    });
   });
 });

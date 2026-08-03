@@ -154,6 +154,20 @@ export interface ListIssueDependenciesParams {
   limit?: number;
 }
 
+export interface CheckIssueBlockedParams {
+  owner: string;
+  repo: string;
+  index: number;
+}
+
+export interface IssueBlockedResult {
+  index: number;
+  blocked: boolean;
+  blockers: Issue[];
+  total_dependencies: number;
+  open_blockers: number;
+}
+
 /**
  * Identifies the dependency/block relationship target. `owner` / `repo` / `index`
  * locate the issue in the request path; `depIndex` (+ optional `depOwner` /
@@ -793,6 +807,31 @@ export class GiteaClient {
   async removeIssueBlock(params: IssueDependencyTargetParams): Promise<Issue> {
     const path = `/repos/${encodeURIComponent(params.owner)}/${encodeURIComponent(params.repo)}/issues/${params.index}/blocks`;
     return this.request<Issue>("DELETE", path, this.issueMetaBody(params));
+  }
+
+  /**
+   * Determine whether `index` is blocked: it has at least one dependency whose
+   * `state` is not `"closed"`. Paginates `listIssueDependencies` internally until
+   * all dependencies are collected, then assembles the verdict in a single result.
+   */
+  async checkIssueBlocked(params: CheckIssueBlockedParams): Promise<IssueBlockedResult> {
+    const pageSize = 100;
+    const dependencies: Issue[] = [];
+
+    for (let page = 1; ; page++) {
+      const deps = await this.listIssueDependencies({ ...params, page, limit: pageSize });
+      dependencies.push(...deps);
+      if (deps.length < pageSize) break;
+    }
+
+    const blockers = dependencies.filter((dep) => dep.state !== "closed");
+    return {
+      index: params.index,
+      blocked: blockers.length > 0,
+      blockers,
+      total_dependencies: dependencies.length,
+      open_blockers: blockers.length,
+    };
   }
 
   async listComments(

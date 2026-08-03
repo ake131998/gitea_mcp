@@ -27,6 +27,7 @@ import {
   ListIssueBlocksSchema,
   AddIssueBlockSchema,
   RemoveIssueBlockSchema,
+  CheckIssueBlockedSchema,
   ListMilestonesSchema,
   GetMilestoneSchema,
   CreateMilestoneSchema,
@@ -537,6 +538,22 @@ export async function createServer(
       });
       return {
         content: [{ type: "text", text: JSON.stringify(issue, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "check_issue_blocked",
+    {
+      description:
+        "Check whether an issue is blocked — i.e. has at least one dependency that is not yet closed (`state !== \"closed\"`). Returns a single structured verdict: `blocked`, `blockers` (the open dependency issues), `total_dependencies`, and `open_blockers`. A convenience aggregator over `list_issue_dependencies` that paginates internally (no page/limit input). Returns 404 if the repo has not enabled issue dependencies (`enable_issue_dependencies`).",
+      inputSchema: CheckIssueBlockedSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const verdict = await client.checkIssueBlocked({ owner, repo, index: input.index });
+      return {
+        content: [{ type: "text", text: JSON.stringify(verdict, null, 2) }],
       };
     },
   );
