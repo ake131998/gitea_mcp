@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { GiteaClient, GiteaApiError } from "../gitea-client.js";
+import { buildAuthHeader } from "../credentials.js";
 import type { CandidateCredential } from "../credentials.js";
 
 interface FakeResponse {
@@ -89,6 +90,30 @@ describe("GiteaClient", () => {
       const headers = lastCall(fetchMock).init.headers as Record<string, string>;
       expect(headers["Authorization"]).toBe("token secret");
       expect(headers["Accept"]).toBe("application/json");
+    });
+
+    it("builds the auth header only from buildAuthHeader output, never raw file content", async () => {
+      // A credential-store candidate whose secret came from ~/.git-credentials.
+      const candidate: CandidateCredential = {
+        source: "credential-store",
+        username: "gitea-user",
+        secret: "file-derived-secret-value",
+        schemes: ["basic", "token"],
+        status: "pending",
+        nextSchemeIndex: 0,
+      };
+      const fetchMock = stubFetch(buildResponse({ id: 1 }));
+      const client = new GiteaClient({ baseUrl: "https://g.example", candidates: [candidate] });
+      await client.getIssue("o", "r", 1);
+
+      const headers = lastCall(fetchMock).init.headers as Record<string, string>;
+      // The wire header MUST be byte-for-byte the pure state-machine output
+      // for the first untried scheme — no other interpolation path exists.
+      expect(headers["Authorization"]).toBe(buildAuthHeader(candidate, "basic"));
+      expect(headers["Authorization"]).toBe(
+        `Basic ${Buffer.from("gitea-user:file-derived-secret-value").toString("base64")}`,
+      );
+      expect(headers["Authorization"]).not.toBe("file-derived-secret-value");
     });
 
     it("sets Content-Type only when a body is present", async () => {

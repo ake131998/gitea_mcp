@@ -589,6 +589,16 @@ export class GiteaClient {
    * Single HTTP call. Throws `GiteaApiError` on non-2xx so the retry loop can
    * branch on `status` (never on the message string). The `authHeader` is
    * pre-built by the caller from the active candidate + scheme.
+   *
+   * SECURITY (CodeQL `js/file-access-to-http`): the `Authorization` header
+   * below intentionally carries credentials read from local git files
+   * (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret` →
+   * `buildAuthHeader`, see `credentials.ts`). This is the designed
+   * authentication pipeline (docs/architecture.md §5.3), NOT information
+   * exfiltration: the secret is sent verbatim because that is its purpose,
+   * and AGENTS.md §4 forbids logging or echoing it anywhere else. The sink is
+   * suppressed path-scoped below — the rule stays globally enabled as a
+   * guardrail against real backdoor injection.
    */
   private async doRequest<T>(
     method: string,
@@ -603,9 +613,16 @@ export class GiteaClient {
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
+      // Intentional: `init` carries the file-derived auth header built by
+      // buildAuthHeader (see the doRequest doc comment above). Path-scoped
+      // suppression for this sink; the rule stays globally enabled.
+      // codeql[js/file-access-to-http]
       init.body = JSON.stringify(body);
     }
 
+    // Intentional credential authentication (docs/architecture.md §5.3,
+    // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
+    // codeql[js/file-access-to-http]
     const response = await fetch(url, init);
 
     if (!response.ok) {

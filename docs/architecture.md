@@ -234,6 +234,13 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   output (see AGENTS.md §4 Secret Handling). The `gitea_status` diagnostic tool
   surfaces a redacted view via `getCredentialStatus()` → `summarizeCandidates()`
   (`secretPresent: boolean`, masked username `firstChar***`).
+- **CodeQL `js/file-access-to-http` mitigation:** the `Authorization` header
+  intentionally carries file-derived credentials (this pipeline is the point of
+  the discovery + state-machine design), so the flagged data flow at the
+  `doRequest` sink is documented inline and carries a path-scoped
+  `codeql[js/file-access-to-http]` suppression comment with justification. The
+  rule stays globally enabled; only this sink is suppressed (see the
+  `doRequest` doc comment in `gitea-client.ts`).
 
 `GiteaApiError extends Error` with typed `{status, statusText, body}` fields so
 callers can branch on `err.status === 401` without substring-matching the
