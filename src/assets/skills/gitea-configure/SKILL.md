@@ -19,8 +19,11 @@ On start, the server reads `<cwd>/.git/config` and resolves in this order:
 3. **Remote selection** — `upstream` remote first, falling back to `origin`, then any
    other remote. Both are surfaced in `resolve_repo` output.
 
-If the working directory has NO git remote and `GITEA_BASE_URL` is unset, the server does
-NOT start (it prints a skip reason and exits 0). That is intentional, not a crash.
+If the working directory has NO git remote and `GITEA_BASE_URL` is unset, the server
+starts in an **unconfigured** state — `tools/list` is available, but business tools
+return `NotConfiguredError`. Use the `configure_gitea` tool to set the connection at
+runtime (session-scoped, never persisted), or guide the user to restart from a cloned
+repo / with env vars set.
 
 ## Token discovery chain (tried in order)
 
@@ -52,7 +55,11 @@ NOT start (it prints a skip reason and exits 0). That is intentional, not a cras
    - add to the credential store, or
    - export `GITEA_TOKEN` (and `GITEA_BASE_URL`) in their MCP client config.
    `<baseUrl>` is the EXACT value `resolve_repo` reported (scheme + host, with port if any).
-4. The server must be restarted for new config to take effect — discovery runs once at start.
+4. After the user stores the credential, call `configure_gitea` with the same `base_url`
+   to trigger credential re-discovery — no restart needed. If the server started
+   unconfigured, provide `base_url` (and optionally `username` for identity selection)
+   in the same call. Re-calling with the same `base_url` is the "I just added a
+   credential-store entry, refresh now" idiom.
 
 ## Never log the token
 

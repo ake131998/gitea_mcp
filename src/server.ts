@@ -40,6 +40,7 @@ import {
   AddTopicSchema,
   RemoveTopicSchema,
   GiteaStatusSchema,
+  ConfigureGiteaSchema,
   ListPullRequestsSchema,
   GetPullRequestSchema,
   CreatePullRequestSchema,
@@ -69,7 +70,8 @@ import {
   ListProjectsSchema,
   GetProjectSchema,
 } from "./tools.js";
-import { parseRemotes, selectRemote, resolveGitConfigPath } from "./git-config.js";
+import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost } from "./git-config.js";
+import type { DiscoverCredentialsForHostOptions } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
 import { readFile } from "node:fs/promises";
@@ -80,15 +82,36 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string };
 
+/**
+ * Optional dependency-injection point for hermetic unit tests. When `discoverCredentials`
+ * is provided, the `configure_gitea` tool calls it instead of the real `discoverCredentialsForHost`,
+ * so tests can exercise credential re-discovery without touching the filesystem.
+ */
+export interface ServerDeps {
+  discoverCredentials?: (
+    options: DiscoverCredentialsForHostOptions,
+  ) => Promise<CandidateCredential[]>;
+}
+
 export async function createServer(
-  baseUrl: string,
+  baseUrl?: string,
   candidates?: CandidateCredential[],
   defaultOwner?: string,
   defaultRepo?: string,
+  deps?: ServerDeps,
 ) {
-  const client = Array.isArray(candidates)
-    ? new GiteaClient({ baseUrl, candidates })
-    : new GiteaClient({ baseUrl, token: candidates });
+  const client = baseUrl
+    ? Array.isArray(candidates)
+      ? new GiteaClient({ baseUrl, candidates })
+      : new GiteaClient({ baseUrl, token: candidates })
+    : new GiteaClient({});
+
+  // Session-scoped target state — lives in process memory only, never persisted.
+  const session = {
+    defaultOwner,
+    defaultRepo,
+    username: undefined as string | undefined,
+  };
 
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   let instructions: string | undefined;
@@ -115,11 +138,11 @@ export async function createServer(
   );
 
   function resolve(input: { owner?: string; repo?: string }) {
-    const owner = input.owner || defaultOwner;
-    const repo = input.repo || defaultRepo;
+    const owner = input.owner || session.defaultOwner;
+    const repo = input.repo || session.defaultRepo;
     if (!owner || !repo) {
       throw new Error(
-        "owner and repo are required. Provide them directly, set GITEA_DEFAULT_OWNER/GITEA_DEFAULT_REPO env vars, or use resolve_repo to detect from git.",
+        "owner and repo are required. Provide them directly, set GITEA_DEFAULT_OWNER/GITEA_DEFAULT_REPO env vars, use resolve_repo to detect from git, or call configure_gitea to set them at runtime.",
       );
     }
     return { owner, repo };
@@ -1225,16 +1248,107 @@ export async function createServer(
   );
 
   server.registerTool(
+    "configure_gitea",
+    {
+      description:
+        "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (.git/config [gitea] section, GITEA_TOKEN env, git credential store). Tokens never pass through this tool; they are always read from the local credential sources. username strictly filters credential-store entries by exact match (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+      inputSchema: ConfigureGiteaSchema.shape,
+    },
+    async (input) => {
+      if (!input.base_url && !input.owner && !input.repo && !input.username) {
+        throw new Error("At least one of base_url, owner, repo, or username must be provided.");
+      }
+
+      const discover = deps?.discoverCredentials ?? discoverCredentialsForHost;
+
+      // 1) Compute the target baseUrl (input.base_url ?? current).
+      const currentBaseUrl = client.getBaseUrl();
+      const targetBaseUrl = input.base_url ?? currentBaseUrl;
+
+      // Re-discovery is triggered by providing base_url or username.
+      const needsRediscovery = input.base_url !== undefined || input.username !== undefined;
+
+      let newCandidates: CandidateCredential[] | undefined;
+
+      if (needsRediscovery) {
+        // If re-discovery is needed but no baseUrl exists → error.
+        if (!targetBaseUrl) {
+          throw new Error(
+            "Cannot trigger credential re-discovery without a base_url. Provide base_url first (e.g. call configure_gitea with base_url set).",
+          );
+        }
+        // 2) Call discoverCredentials — on throw, abort entirely with zero state change.
+        const repoPath =
+          session.defaultOwner && session.defaultRepo
+            ? `${session.defaultOwner}/${session.defaultRepo}`
+            : undefined;
+        newCandidates = await discover({
+          baseUrl: targetBaseUrl,
+          username: input.username ?? session.username,
+          repoPath,
+        });
+      }
+
+      // 3) client.configure({ baseUrl, candidates }) — atomic replacement.
+      client.configure({
+        baseUrl: targetBaseUrl ?? undefined,
+        candidates: newCandidates,
+      });
+
+      // 4) Update session scalar fields.
+      if (input.owner !== undefined) session.defaultOwner = input.owner;
+      if (input.repo !== undefined) session.defaultRepo = input.repo;
+      if (input.username !== undefined) session.username = input.username;
+
+      // 5) Return a redacted summary — secrets never appear in tool output.
+      const status = client.getCredentialStatus();
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                configured: status.configured,
+                baseUrl: status.baseUrl,
+                owner: session.defaultOwner,
+                repo: session.defaultRepo,
+                username: session.username,
+                candidates: status.candidates,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
     "gitea_status",
     {
       description:
-        "Report the resolved credential state: every discovered credential candidate, its source (gitea-config / env / credential-store), the auth schemes that will be tried, and per-scheme outcome (pending / active / exhausted with redacted last error). Secrets are NEVER returned — only a `secretPresent` boolean and a masked username (`firstChar***`). Use this when a tool returns 401/403 to see which schemes were rejected and which candidate (if any) is currently active. Takes no input.",
+        "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
       inputSchema: GiteaStatusSchema.shape,
     },
     async () => {
       const status = client.getCredentialStatus();
       return {
-        content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                ...status,
+                owner: session.defaultOwner,
+                repo: session.defaultRepo,
+                username: session.username,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     },
   );
@@ -1532,12 +1646,13 @@ export async function createServer(
 }
 
 export async function runServer(
-  baseUrl: string,
+  baseUrl?: string,
   candidates?: CandidateCredential[],
   defaultOwner?: string,
   defaultRepo?: string,
+  deps?: ServerDeps,
 ) {
-  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo);
+  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

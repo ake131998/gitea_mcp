@@ -104,9 +104,11 @@ On start, `gitea-mcp` reads `<cwd>/.git/config` and derives:
 - **Remote selection** — the `upstream` remote is preferred, falling back to `origin`, then
   any other remote. Both are reported by `resolve_repo` when they differ.
 
-If the current directory has no git remote and `GITEA_BASE_URL` is not set, the server does
-**not** start — it prints a skip reason and exits 0. Run it from inside a cloned Gitea
-repository, or set `GITEA_BASE_URL` / `GITEA_TOKEN` explicitly.
+If the current directory has no git remote and `GITEA_BASE_URL` is not set, the server
+starts in an **unconfigured** state — `tools/list` is fully available, but business tools
+return a `NotConfiguredError` on invocation. Use the `configure_gitea` tool to set the
+connection at runtime (session-scoped, never persisted), or run from inside a cloned
+Gitea repository, or set `GITEA_BASE_URL` / `GITEA_TOKEN` explicitly.
 
 ### Token discovery
 
@@ -405,6 +407,7 @@ gitea-mcp
 | `list_my_repos` | List repositories accessible to the authenticated user |
 | `resolve_repo` | Detect `baseUrl`, `owner`, and `repo` from the project's git remotes (`upstream` preferred, then `origin`) |
 | `gitea_status` | Inspect credential-handling state — active candidate, exhausted candidates, last error (redacted; secrets never exposed) |
+| `configure_gitea` | Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts `base_url`, `owner`, `repo`, and/or `username`. Providing `base_url` or `username` triggers credential re-discovery from the existing local sources — tokens never pass through this tool |
 
 ## AI Guidance & Skills
 

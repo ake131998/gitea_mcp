@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { GiteaClient, GiteaApiError } from "../gitea-client.js";
+import { GiteaClient, GiteaApiError, NotConfiguredError } from "../gitea-client.js";
 import { buildAuthHeader } from "../credentials.js";
 import type { CandidateCredential } from "../credentials.js";
 
@@ -79,6 +79,111 @@ describe("GiteaClient", () => {
       expect(() => new GiteaClient({ baseUrl: "not-a-url", token: "t" })).toThrow(
         "Invalid Gitea baseUrl",
       );
+    });
+  });
+
+  describe("unconfigured state", () => {
+    it("constructs with no config and reports not configured", () => {
+      const client = new GiteaClient({});
+      expect(client.isConfigured()).toBe(false);
+      expect(client.getBaseUrl()).toBeNull();
+    });
+
+    it("throws NotConfiguredError before any fetch when unconfigured", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({});
+      await expect(client.listMyRepos()).rejects.toThrow(NotConfiguredError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("throws NotConfiguredError for search_issues (bypasses resolve)", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({});
+      await expect(client.searchIssues({})).rejects.toThrow(NotConfiguredError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("getCredentialStatus reports configured: false and null baseUrl", () => {
+      const client = new GiteaClient({});
+      const status = client.getCredentialStatus();
+      expect(status.configured).toBe(false);
+      expect(status.baseUrl).toBeNull();
+    });
+  });
+
+  describe("configure()", () => {
+    it("sets baseUrl and candidates atomically", () => {
+      const client = new GiteaClient({});
+      expect(client.isConfigured()).toBe(false);
+
+      client.configure({
+        baseUrl: "https://g.example",
+        candidates: [{ source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 }],
+      });
+
+      expect(client.isConfigured()).toBe(true);
+      expect(client.getBaseUrl()).toBe("https://g.example");
+    });
+
+    it("normalizes the baseUrl (strips trailing slashes)", () => {
+      const client = new GiteaClient({});
+      client.configure({ baseUrl: "https://g.example///" });
+      expect(client.getBaseUrl()).toBe("https://g.example");
+    });
+
+    it("rejects a non-http protocol via normalizeBaseUrl", () => {
+      const client = new GiteaClient({});
+      expect(() => client.configure({ baseUrl: "file:///etc/passwd" })).toThrow(
+        "must use http or https",
+      );
+    });
+
+    it("resets the state machine — active candidates go back to pending", () => {
+      const client = new GiteaClient({
+        baseUrl: "https://old.example",
+        candidates: [
+          { source: "env", secret: "oldtok", schemes: ["token"], status: "active", nextSchemeIndex: 0, activeScheme: "token" },
+        ],
+      });
+      // Verify the active state
+      expect(client.getCredentialStatus().candidates[0].status).toBe("active");
+
+      // Reconfigure with new candidates
+      client.configure({
+        baseUrl: "https://new.example",
+        candidates: [
+          { source: "env", secret: "newtok", schemes: ["token"], status: "active", nextSchemeIndex: 1, activeScheme: "token" },
+        ],
+      });
+
+      // The old active state must be fully reset
+      const status = client.getCredentialStatus();
+      expect(status.configured).toBe(true);
+      expect(status.baseUrl).toBe("https://new.example");
+      expect(status.candidates[0].status).toBe("pending");
+      expect(status.candidates[0].activeScheme).toBeNull();
+    });
+
+    it("makes a defensive copy of candidates", () => {
+      const input = [{ source: "env" as const, secret: "tok", schemes: ["token" as const], status: "pending" as const, nextSchemeIndex: 0 }];
+      const client = new GiteaClient({ baseUrl: "https://g.example", candidates: input });
+      // Mutate the external array
+      input[0].secret = "tampered";
+      // The client's copy should be unaffected
+      const status = client.getCredentialStatus();
+      expect(status.candidates[0].secretPresent).toBe(true);
+    });
+
+    it("can update only baseUrl without touching candidates", () => {
+      const client = new GiteaClient({
+        baseUrl: "https://old.example",
+        candidates: [{ source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 }],
+      });
+      client.configure({ baseUrl: "https://new.example" });
+      expect(client.getBaseUrl()).toBe("https://new.example");
+      // Candidates unchanged
+      const status = client.getCredentialStatus();
+      expect(status.totalCandidates).toBe(1);
     });
   });
 

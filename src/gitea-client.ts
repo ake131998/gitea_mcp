@@ -10,7 +10,11 @@ import {
 } from "./credentials.js";
 
 export interface GiteaConfig {
-  baseUrl: string;
+  /**
+   * Gitea instance base URL. Optional — when omitted, the client starts in an
+   * unconfigured state and `configure()` is used to set it at runtime.
+   */
+  baseUrl?: string;
   /**
    * Legacy single-token mode. When `candidates` is omitted, this is wrapped
    * as a one-element candidate list with the `token` scheme (preserving the
@@ -23,6 +27,21 @@ export interface GiteaConfig {
    * order until one succeeds, with 401/403 advancing to the next attempt.
    */
   candidates?: CandidateCredential[];
+}
+
+/**
+ * Thrown when an API tool is invoked before the client has been configured
+ * with a baseUrl. Every business tool entry point (`request()`) guards with
+ * this before any fetch is attempted, so the error message always reaches the
+ * MCP client as actionable guidance.
+ */
+export class NotConfiguredError extends Error {
+  constructor() {
+    super(
+      "Gitea connection is not configured. Use the configure_gitea tool to set base_url/owner/repo/username, or see the gitea-configure skill for guidance.",
+    );
+    this.name = "NotConfiguredError";
+  }
 }
 
 /**
@@ -556,30 +575,45 @@ export interface UpdateReleaseParams {
 }
 
 export class GiteaClient {
-  private baseUrl: string;
+  private baseUrl: string | null;
   private candidates: CandidateCredential[];
 
-  constructor(config: GiteaConfig) {
-    // baseUrl originates from git config files and flows into outbound fetch
-    // calls. Parse and validate it, then reconstruct from URL components so
-    // only sanitized data — never the raw file string — reaches the network.
+  constructor(config: GiteaConfig = {}) {
+    this.baseUrl = config.baseUrl ? GiteaClient.normalizeBaseUrl(config.baseUrl) : null;
+    this.candidates = GiteaClient.initCandidates(config);
+  }
+
+  /**
+   * Parse, validate, and normalize a raw baseUrl string. Shared by the
+   * constructor and `configure()` so tool-supplied URLs go through the same
+   * protocol allowlist + URL reconstruction pipeline as git-file-derived values.
+   */
+  private static normalizeBaseUrl(raw: string): string {
     let parsed: URL;
     try {
-      parsed = new URL(config.baseUrl);
+      parsed = new URL(raw);
     } catch {
-      throw new Error(`Invalid Gitea baseUrl: ${config.baseUrl}`);
+      throw new Error(`Invalid Gitea baseUrl: ${raw}`);
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error(`Gitea baseUrl must use http or https, got: ${parsed.protocol}`);
     }
     let path = parsed.pathname;
     while (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
-    this.baseUrl = `${parsed.protocol}//${parsed.host}${path === "/" ? "" : path}`;
+    return `${parsed.protocol}//${parsed.host}${path === "/" ? "" : path}`;
+  }
+
+  /**
+   * Build the initial candidate list from config — shared extraction so the
+   * constructor stays focused on assignment.
+   */
+  private static initCandidates(config: GiteaConfig): CandidateCredential[] {
     if (config.candidates && config.candidates.length > 0) {
       // Defensive copy so external mutation cannot desync the state machine.
-      this.candidates = config.candidates.map((c) => ({ ...c }));
-    } else if (config.token) {
-      this.candidates = [
+      return config.candidates.map((c) => ({ ...c }));
+    }
+    if (config.token) {
+      return [
         {
           source: "env",
           secret: config.token,
@@ -588,9 +622,41 @@ export class GiteaClient {
           nextSchemeIndex: 0,
         },
       ];
-    } else {
-      this.candidates = [];
     }
+    return [];
+  }
+
+  /**
+   * Atomically replace the connection state. When `baseUrl` is provided it is
+   * normalized and set; when `candidates` is provided they replace the current
+   * list with defensive copies whose state machine is fully reset (all back to
+   * `pending`). This prevents an old host's active candidate from sending its
+   * old token to a new host.
+   */
+  configure(params: { baseUrl?: string; candidates?: CandidateCredential[] }): void {
+    if (params.baseUrl !== undefined) {
+      this.baseUrl = GiteaClient.normalizeBaseUrl(params.baseUrl);
+    }
+    if (params.candidates !== undefined) {
+      this.candidates = params.candidates.map((c) => ({
+        ...c,
+        status: "pending" as const,
+        nextSchemeIndex: 0,
+        activeScheme: undefined,
+        lastError: undefined,
+        lastTriedScheme: undefined,
+      }));
+    }
+  }
+
+  /** Whether the client has a baseUrl and can make API calls. */
+  isConfigured(): boolean {
+    return this.baseUrl !== null;
+  }
+
+  /** The current normalized baseUrl, or null when unconfigured. */
+  getBaseUrl(): string | null {
+    return this.baseUrl;
   }
 
   /**
@@ -599,11 +665,15 @@ export class GiteaClient {
    * `username`. See `summarizeCandidates` in `credentials.ts`.
    */
   getCredentialStatus(): {
+    configured: boolean;
+    baseUrl: string | null;
     candidates: CandidateSummary[];
     activeIndex: number | null;
     totalCandidates: number;
   } {
     return {
+      configured: this.baseUrl !== null,
+      baseUrl: this.baseUrl,
       candidates: summarizeCandidates(this.candidates),
       activeIndex: findActiveCandidateIndex(this.candidates),
       totalCandidates: this.candidates.length,
@@ -631,6 +701,11 @@ export class GiteaClient {
     body: unknown,
     authHeader: string | null,
   ): Promise<T> {
+    // Guard: every API tool enters here through request(), which already checks
+    // for the unconfigured state. This assertion exists solely for TypeScript
+    // narrowing (this.baseUrl is string | null); it is never reached at runtime
+    // unless doRequest is called directly (which never happens).
+    if (this.baseUrl === null) throw new NotConfiguredError();
     const url = new URL(`${this.baseUrl}/api/v1${path}`).href;
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
@@ -685,6 +760,11 @@ export class GiteaClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
+    // Single guard point: when unconfigured, throw before any fetch. This
+    // covers every API tool including search_issues / list_my_repos which
+    // bypass resolve() but still enter request().
+    if (this.baseUrl === null) throw new NotConfiguredError();
+
     const activeIdx = findActiveCandidateIndex(this.candidates);
     if (activeIdx !== null) {
       const active = this.candidates[activeIdx];

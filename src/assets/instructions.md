@@ -11,8 +11,9 @@ and `token` so one global install can serve many projects. The `GITEA_BASE_URL` 
 `GITEA_TOKEN` / `GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` env vars are OPTIONAL
 overrides; when set they take precedence over git discovery. The remote is chosen
 `upstream` first, then `origin`. If the cwd has no git remote and `GITEA_BASE_URL` is
-unset, the server does not start (it prints a skip reason and exits 0). If you hit a
-401/403 or the connection looks unset, use the **gitea-configure** skill.
+unset, the server starts in an **unconfigured** state — tools/list is available but
+business tools return a `NotConfiguredError`. Use the **configure_gitea** tool to set
+the connection at runtime, or the **gitea-configure** skill for guided setup.
 
 ## Resolve owner/repo FIRST (most common failure)
 

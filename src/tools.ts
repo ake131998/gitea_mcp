@@ -320,6 +320,30 @@ export const RemoveTopicSchema = z.object({
 
 export const GiteaStatusSchema = z.object({});
 
+export const ConfigureGiteaSchema = z.object({
+  base_url: z
+    .string()
+    .url()
+    .optional()
+    .describe(
+      "Gitea instance base URL (e.g. https://gitea.example.com). Providing base_url — even unchanged — triggers credential re-discovery for that host. Use this as the 'I just added a credential-store entry, refresh now' idiom.",
+    ),
+  owner: z
+    .string()
+    .optional()
+    .describe("Default repository owner for tool calls that omit the owner argument."),
+  repo: z
+    .string()
+    .optional()
+    .describe("Default repository name for tool calls that omit the repo argument."),
+  username: z
+    .string()
+    .optional()
+    .describe(
+      "Selects which identity to use from the git credential store. Host-matching entries are strictly filtered by this username — no fallback to other identities. Providing username triggers credential re-discovery.",
+    ),
+});
+
 // ── Pull Requests ──
 
 export const ListPullRequestsSchema = z.object({
