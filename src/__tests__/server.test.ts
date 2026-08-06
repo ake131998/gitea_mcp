@@ -18,7 +18,7 @@ const CLIENT_METHODS = [
   "listIssueDependencies", "addIssueDependency", "removeIssueDependency",
   "listIssueBlocks", "addIssueBlock", "removeIssueBlock", "checkIssueBlocked",
   "listMilestones", "getMilestone", "createMilestone", "updateMilestone", "deleteMilestone",
-  "listMyRepos", "getCredentialStatus",
+  "listMyRepos", "getCredentialStatus", "configure", "isConfigured", "getBaseUrl",
   "listTopics", "replaceTopics", "addTopic", "removeTopic",
   "listPullRequests", "getPullRequest", "createPullRequest", "updatePullRequest",
   "mergePullRequest", "isPullMerged", "listPullCommits", "listPullFiles",
@@ -60,7 +60,7 @@ const EXPECTED_TOOLS = [
   "list_wiki_pages", "get_wiki_page", "create_wiki_page",
   "update_wiki_page", "delete_wiki_page", "list_wiki_revisions",
   "list_projects", "get_project",
-  "resolve_repo", "list_my_repos", "gitea_status",
+  "resolve_repo", "list_my_repos", "gitea_status", "configure_gitea",
 ];
 
 describe("createServer", () => {
@@ -202,14 +202,22 @@ describe("tool handlers", () => {
     expect(mockClient.listMyRepos).toHaveBeenCalledWith(2, 30);
   });
 
-  it("gitea_status returns the client credential status as JSON", async () => {
+  it("gitea_status returns the client credential status plus session state as JSON", async () => {
     const { createServer } = await import("../server.js");
-    const status = { candidates: [{ source: "env", schemes: ["token"], status: "pending" }], activeIndex: null, totalCandidates: 1 };
+    const status = {
+      configured: true,
+      baseUrl: "https://g",
+      candidates: [{ source: "env", schemes: ["token"], status: "pending" }],
+      activeIndex: null,
+      totalCandidates: 1,
+    };
     mockClient.getCredentialStatus.mockReturnValue(status);
-    const server = await createServer("https://g");
+    const server = await createServer("https://g", undefined, "owner", "repo");
     const result = await registeredTools(server as never)["gitea_status"].handler({});
     expect(mockClient.getCredentialStatus).toHaveBeenCalled();
-    expect(JSON.parse(result.content[0].text)).toEqual(status);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toMatchObject({ configured: true, baseUrl: "https://g", totalCandidates: 1 });
+    expect(parsed).toMatchObject({ owner: "owner", repo: "repo" });
   });
 
   it("list_topics returns JSON of the client result", async () => {
@@ -727,5 +735,120 @@ describe("resolve_repo handler", () => {
       repo: "repo",
       baseUrl: "https://gitea.example",
     });
+  });
+});
+
+describe("configure_gitea tool", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockClient = {};
+    for (const m of CLIENT_METHODS) mockClient[m] = vi.fn();
+    vi.mocked(GiteaClient).mockImplementation(function () { return mockClient; } as never);
+  });
+
+  it("throws when no fields are provided", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer();
+    await expect(
+      registeredTools(server as never)["configure_gitea"].handler({}),
+    ).rejects.toThrow("At least one of");
+  });
+
+  it("sets owner/repo without triggering credential re-discovery", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer();
+    mockClient.getBaseUrl.mockReturnValue(null);
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: false, baseUrl: null, candidates: [], activeIndex: null, totalCandidates: 0,
+    });
+    const result = await registeredTools(server as never)["configure_gitea"].handler({
+      owner: "myorg",
+      repo: "myrepo",
+    });
+    expect(mockClient.configure).toHaveBeenCalledWith({ baseUrl: undefined, candidates: undefined });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toMatchObject({ owner: "myorg", repo: "myrepo" });
+  });
+
+  it("triggers credential re-discovery when base_url is provided", async () => {
+    const discover = vi.fn().mockResolvedValue([
+      { source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
+    ]);
+    const { createServer } = await import("../server.js");
+    const server = await createServer(undefined, undefined, undefined, undefined, { discoverCredentials: discover });
+    mockClient.getBaseUrl.mockReturnValue(null);
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: true, baseUrl: "https://g.example", candidates: [], activeIndex: null, totalCandidates: 1,
+    });
+    const result = await registeredTools(server as never)["configure_gitea"].handler({
+      base_url: "https://g.example",
+    });
+    expect(discover).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://g.example" }));
+    expect(mockClient.configure).toHaveBeenCalledWith({
+      baseUrl: "https://g.example",
+      candidates: [expect.objectContaining({ secret: "tok" })],
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toMatchObject({ configured: true, baseUrl: "https://g.example" });
+  });
+
+  it("triggers re-discovery when username is provided (refresh idiom)", async () => {
+    const discover = vi.fn().mockResolvedValue([]);
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g.example", undefined, "o", "r", { discoverCredentials: discover });
+    mockClient.getBaseUrl.mockReturnValue("https://g.example");
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: true, baseUrl: "https://g.example", candidates: [], activeIndex: null, totalCandidates: 0,
+    });
+    await registeredTools(server as never)["configure_gitea"].handler({
+      username: "alice",
+    });
+    expect(discover).toHaveBeenCalledWith(expect.objectContaining({
+      baseUrl: "https://g.example",
+      username: "alice",
+    }));
+  });
+
+  it("errors when re-discovery is triggered but no baseUrl exists", async () => {
+    const discover = vi.fn();
+    const { createServer } = await import("../server.js");
+    const server = await createServer(undefined, undefined, undefined, undefined, { discoverCredentials: discover });
+    mockClient.getBaseUrl.mockReturnValue(null);
+    await expect(
+      registeredTools(server as never)["configure_gitea"].handler({ username: "alice" }),
+    ).rejects.toThrow("Cannot trigger credential re-discovery without a base_url");
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it("preserves failure atomicity — discovery throw leaves zero state change", async () => {
+    const discover = vi.fn().mockRejectedValue(new Error("fs error"));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g.example", undefined, "o", "r", { discoverCredentials: discover });
+    mockClient.getBaseUrl.mockReturnValue("https://g.example");
+    await expect(
+      registeredTools(server as never)["configure_gitea"].handler({ base_url: "https://new.example" }),
+    ).rejects.toThrow("fs error");
+    // configure should NOT have been called
+    expect(mockClient.configure).not.toHaveBeenCalled();
+  });
+
+  it("does not leak secrets in the tool output", async () => {
+    const discover = vi.fn().mockResolvedValue([
+      { source: "env", secret: "super-secret-token", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
+    ]);
+    const { createServer } = await import("../server.js");
+    const server = await createServer(undefined, undefined, undefined, undefined, { discoverCredentials: discover });
+    mockClient.getBaseUrl.mockReturnValue(null);
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: true,
+      baseUrl: "https://g.example",
+      candidates: [{ source: "env", schemes: ["token"], username: null, secretPresent: true, status: "pending", lastTriedScheme: null, activeScheme: null, lastError: null }],
+      activeIndex: null,
+      totalCandidates: 1,
+    });
+    const result = await registeredTools(server as never)["configure_gitea"].handler({
+      base_url: "https://g.example",
+    });
+    expect(result.content[0].text).not.toContain("super-secret-token");
   });
 });

@@ -14,8 +14,6 @@ vi.mock("../skills.js", () => ({
   runInitCommand: vi.fn(),
 }));
 
-const SKIP_PREFIX = "gitea-mcp: no git remote found in";
-
 describe("cli entry point", () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
@@ -42,11 +40,15 @@ describe("cli entry point", () => {
     vi.restoreAllMocks();
   });
 
-  it("exits 0 with a skip reason when no config can be discovered", async () => {
+  it("starts the server UNCONFIGURED when no config can be discovered", async () => {
     vi.mocked(discoverConfig).mockResolvedValue(null);
-    await expect(import("../cli.js")).rejects.toThrow("process.exit(0)");
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining(SKIP_PREFIX));
-    expect(runServer).not.toHaveBeenCalled();
+    vi.mocked(runServer).mockResolvedValue(undefined);
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith();
+    });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("UNCONFIGURED"));
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   it("starts the server with the discovered baseUrl/candidates/owner/repo", async () => {

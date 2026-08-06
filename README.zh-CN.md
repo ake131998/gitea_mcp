@@ -102,8 +102,10 @@ node dist/cli.js
 - **远程选择** —— 优先 `upstream`，回退 `origin`，再回退其它远程。两者不同时 `resolve_repo`
   会同时返回。
 
-若当前目录没有 git 远程、且未设置 `GITEA_BASE_URL`，服务器**不会启动**——它会打印跳过原因并
-以 exit 0 退出。请在克隆的 Gitea 仓库内运行，或显式设置 `GITEA_BASE_URL` / `GITEA_TOKEN`。
+若当前目录没有 git 远程、且未设置 `GITEA_BASE_URL`，服务器会以**未配置**状态启动——
+`tools/list` 完全可用，但业务工具调用时返回 `NotConfiguredError`。使用 `configure_gitea`
+工具在运行时配置连接（仅当前会话，不持久化），或在克隆的 Gitea 仓库内运行，或显式设置
+`GITEA_BASE_URL` / `GITEA_TOKEN`。
 
 ### 令牌发现
 
@@ -386,6 +388,7 @@ gitea-mcp
 | `list_my_repos` | 列出当前用户可访问的仓库 |
 | `resolve_repo` | 从项目 git 远程地址检测 `baseUrl`、`owner`、`repo`（优先 `upstream`，回退 `origin`） |
 | `gitea_status` | 查看认证处理状态 —— active 候选、已耗尽候选、最近一次错误（脱敏；永不暴露密钥） |
+| `configure_gitea` | 在运行时配置 Gitea 连接（仅当前会话，不持久化）。接受 `base_url`、`owner`、`repo`、`username`。提供 `base_url` 或 `username` 会触发从本地来源重新发现凭据——令牌永不通过此工具传递 |
 
 ## AI 引导与技能
 

@@ -51,9 +51,9 @@ if (head === "init") {
   // credential candidates (config token, env token, credential-store entries)
   // rather than picking one, so the client can fall back across them when one
   // scheme is rejected (e.g. an account password that is not a PAT). When
-  // neither env nor any git remote provides a baseUrl, the server is
-  // intentionally skipped: a single global install should stay dormant outside
-  // of git projects.
+  // neither env nor any git remote provides a baseUrl, the server starts in
+  // an UNCONFIGURED state — business tools return NotConfiguredError on
+  // invocation, and the configure_gitea tool enables runtime configuration.
   const discovered = await discoverConfig().catch((err: unknown) => {
     console.error("Fatal error:", err);
     process.exit(1);
@@ -61,18 +61,21 @@ if (head === "init") {
 
   if (!discovered) {
     console.error(
-      `gitea-mcp: no git remote found in ${process.cwd()} and GITEA_BASE_URL is not set; skipping server start.`,
+      `gitea-mcp: starting UNCONFIGURED — no git remote found in ${process.cwd()} and GITEA_BASE_URL is not set. Use the configure_gitea tool to configure at runtime.`,
     );
-    process.exit(0);
+    runServer().catch((err: unknown) => {
+      console.error("Fatal error:", err);
+      process.exit(1);
+    });
+  } else {
+    runServer(
+      discovered.baseUrl,
+      discovered.candidates,
+      discovered.defaultOwner,
+      discovered.defaultRepo,
+    ).catch((err: unknown) => {
+      console.error("Fatal error:", err);
+      process.exit(1);
+    });
   }
-
-  runServer(
-    discovered.baseUrl,
-    discovered.candidates,
-    discovered.defaultOwner,
-    discovered.defaultRepo,
-  ).catch((err: unknown) => {
-    console.error("Fatal error:", err);
-    process.exit(1);
-  });
 }

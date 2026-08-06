@@ -31,6 +31,26 @@ export interface DiscoverOptions {
 }
 
 /**
+ * Options for host-scoped credential re-discovery (runtime configuration).
+ * Unlike `DiscoverOptions`, a `baseUrl` is required so the host can be derived;
+ * `username` optionally narrows credential-store entries to a single identity.
+ */
+export interface DiscoverCredentialsForHostOptions {
+  baseUrl: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  credentialsPaths?: string[];
+  /**
+   * When set, credential-store entries are strictly filtered by
+   * `entry.username === username` — no fallback to other identities.
+   * `undefined` means "no username filter" (collect all host-matching entries).
+   */
+  username?: string;
+  /** `owner/repo` path used to score credential-store entries by specificity. */
+  repoPath?: string;
+}
+
+/**
  * A parsed `~/.git-credentials` line. Both `username` and `password` are
  * URL-decoded. Either may be absent:
  * - `https://user:pass@host` → both present
@@ -314,58 +334,43 @@ function candidateFromEntry(entry: ParsedCredentialEntry): CandidateCredential |
 }
 
 /**
- * Discover the Gitea connection config from env + the local git context.
+ * Re-run the three-source credential discovery for an explicit baseUrl.
  *
- * baseUrl: `GITEA_BASE_URL` (env) wins; otherwise derived from the selected
- *   remote (`upstream` → `origin` → first). Returns null only when neither is
- *   available — callers should treat that as "do not start the server".
+ * Sources (in priority order):
+ *   1. `[gitea "<baseUrl>"] token` / bare `[gitea] token` from `.git/config`.
+ *   2. `GITEA_TOKEN` env var.
+ *   3. Every host-matching entry in a git credential store, narrowed by
+ *      repo-path specificity and (optionally) strictly filtered by `username`.
  *
- * candidates (in priority order):
- *   1. `[gitea "<baseUrl>"] token` / bare `[gitea] token` from `.git/config`
- *      (explicit user configuration; `token` scheme only).
- *   2. `GITEA_TOKEN` env var (explicit env; `token` scheme only — preserves
- *      the simple-token semantics).
- *   3. Every host-matching entry in a git credential store, narrowed by repo
- *      path specificity (most specific first). Each entry may be a PAT,
- *      password, or OAuth token; the client tries each under `basic` and/or
- *      `token` schemes per the username heuristic.
+ * When `username` is provided, credential-store entries whose
+ * `entry.username !== username` are excluded entirely — no fallback to other
+ * identities. When `username` is `undefined`, all host-matching entries are
+ * collected (same behavior as startup discovery).
  *
- * owner/repo: `GITEA_DEFAULT_OWNER`/`GITEA_DEFAULT_REPO` (env) win; otherwise
- * taken from the selected remote.
- *
- * The result may have an empty `candidates` array (anonymous mode); the server
- * still starts and a Skill guides the user to provide one. Write tools will
- * fail with 401/403 until a working credential is added.
+ * Returns an empty array when no source yields a candidate (anonymous mode
+ * or an unparseable baseUrl).
  */
-export async function discoverConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
+export async function discoverCredentialsForHost(
+  options: DiscoverCredentialsForHostOptions,
+): Promise<CandidateCredential[]> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const envBaseUrl = env.GITEA_BASE_URL;
+
+  let host: string | undefined;
+  try {
+    host = new URL(options.baseUrl).host;
+  } catch {
+    host = undefined;
+  }
 
   const gitConfigPath = await resolveGitConfigPath(cwd);
   const gitConfigContent = await readOptionalFile(gitConfigPath);
-  const parsedRemotes = parseRemotes(gitConfigContent);
-  const selected = selectRemote(parsedRemotes);
-
-  const baseUrl = envBaseUrl ?? selected?.baseUrl;
-  if (!baseUrl) return null;
-
-  let host: string | undefined;
-  if (envBaseUrl) {
-    try {
-      host = new URL(envBaseUrl).host;
-    } catch {
-      host = undefined;
-    }
-  } else {
-    host = selected?.host;
-  }
 
   const candidates: CandidateCredential[] = [];
 
   // Source 1: .git/config [gitea "<baseUrl>"] token / bare [gitea] token.
   if (host) {
-    const configToken = readTokenFromGitConfig(gitConfigContent, baseUrl);
+    const configToken = readTokenFromGitConfig(gitConfigContent, options.baseUrl);
     if (configToken) {
       candidates.push({
         source: "gitea-config",
@@ -377,7 +382,7 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
     }
   }
 
-  // Source 2: GITEA_TOKEN env (simple-token semantics — no scheme probing).
+  // Source 2: GITEA_TOKEN env (always collected, regardless of host).
   const envToken = env.GITEA_TOKEN;
   if (envToken) {
     candidates.push({
@@ -392,13 +397,18 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
   // Source 3..N: credential-store entries, host-matched and path-narrowed.
   if (host) {
     const paths = options.credentialsPaths ?? defaultCredentialsPaths();
-    const repoPath = selected ? `${selected.owner}/${selected.repo}` : "";
+    const repoPath = options.repoPath ?? "";
     const scored: { entry: ParsedCredentialEntry; score: number; order: number }[] = [];
     let order = 0;
     for (const path of paths) {
       const cred = await readOptionalFile(path);
       if (!cred) continue;
-      for (const entry of parseGitCredentials(cred, host)) {
+      let entries = parseGitCredentials(cred, host);
+      // Strict username filter — no fallback to other identities.
+      if (options.username !== undefined) {
+        entries = entries.filter((e) => e.username === options.username);
+      }
+      for (const entry of entries) {
         scored.push({ entry, score: scoreEntryPath(entry.path, repoPath), order: order++ });
       }
     }
@@ -409,6 +419,47 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
       if (candidate) candidates.push(candidate);
     }
   }
+
+  return candidates;
+}
+
+/**
+ * Discover the Gitea connection config from env + the local git context.
+ *
+ * baseUrl: `GITEA_BASE_URL` (env) wins; otherwise derived from the selected
+ *   remote (`upstream` → `origin` → first). Returns null only when neither is
+ *   available — callers should treat that as "start the server unconfigured".
+ *
+ * candidates: collected via `discoverCredentialsForHost`, which re-runs the
+ * three-source discovery (config token → env token → credential-store entries)
+ * for the resolved baseUrl. When no remote and no env baseUrl exist, this
+ * function returns null so the CLI can start the server in its unconfigured
+ * state.
+ *
+ * owner/repo: `GITEA_DEFAULT_OWNER`/`GITEA_DEFAULT_REPO` (env) win; otherwise
+ * taken from the selected remote.
+ */
+export async function discoverConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
+  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
+  const envBaseUrl = env.GITEA_BASE_URL;
+
+  const gitConfigPath = await resolveGitConfigPath(cwd);
+  const gitConfigContent = await readOptionalFile(gitConfigPath);
+  const parsedRemotes = parseRemotes(gitConfigContent);
+  const selected = selectRemote(parsedRemotes);
+
+  const baseUrl = envBaseUrl ?? selected?.baseUrl;
+  if (!baseUrl) return null;
+
+  const repoPath = selected ? `${selected.owner}/${selected.repo}` : undefined;
+  const candidates = await discoverCredentialsForHost({
+    baseUrl,
+    cwd,
+    env,
+    credentialsPaths: options.credentialsPaths,
+    repoPath,
+  });
 
   return {
     baseUrl,

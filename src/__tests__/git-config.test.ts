@@ -12,6 +12,7 @@ import {
   parseGitCredentials,
   defaultCredentialsPaths,
   discoverConfig,
+  discoverCredentialsForHost,
   resolveGitConfigPath,
 } from "../git-config.js";
 
@@ -485,5 +486,109 @@ describe("discoverConfig", () => {
       throw err;
     });
     await expect(discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] })).rejects.toThrow("EACCES");
+  });
+});
+
+describe("discoverCredentialsForHost", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("collects config token, env token, and credential-store entries in priority order", async () => {
+    mockFiles({
+      "/repo/.git/config": [
+        '[gitea "https://gitea.example"]', "\ttoken = configtok",
+      ].join("\n"),
+      "/cred": "https://oauth2:credtok@gitea.example\n",
+    });
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: { GITEA_TOKEN: "envtok" },
+      credentialsPaths: ["/cred"],
+    });
+    expect(candidates).toHaveLength(3);
+    expect(candidates[0]).toMatchObject({ source: "gitea-config", secret: "configtok" });
+    expect(candidates[1]).toMatchObject({ source: "env", secret: "envtok" });
+    expect(candidates[2]).toMatchObject({ source: "credential-store", secret: "credtok" });
+  });
+
+  it("filters credential-store entries strictly by username when provided", async () => {
+    mockFiles({
+      "/cred": "https://alice:secret1@gitea.example\nhttps://bob:secret2@gitea.example\n",
+    });
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      env: {},
+      credentialsPaths: ["/cred"],
+      username: "bob",
+    });
+    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
+    expect(storeCandidates).toHaveLength(1);
+    expect(storeCandidates[0]).toMatchObject({ secret: "secret2", username: "bob" });
+  });
+
+  it("returns zero credential-store candidates when username matches nothing", async () => {
+    mockFiles({
+      "/cred": "https://alice:secret1@gitea.example\nhttps://bob:secret2@gitea.example\n",
+    });
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      env: {},
+      credentialsPaths: ["/cred"],
+      username: "nobody",
+    });
+    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
+    expect(storeCandidates).toHaveLength(0);
+  });
+
+  it("collects all host-matching entries when username is undefined", async () => {
+    mockFiles({
+      "/cred": "https://alice:s1@gitea.example\nhttps://bob:s2@gitea.example\n",
+    });
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      env: {},
+      credentialsPaths: ["/cred"],
+    });
+    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
+    expect(storeCandidates).toHaveLength(2);
+  });
+
+  it("still returns env token when host is unparseable", async () => {
+    mockFiles({});
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "not-a-url",
+      env: { GITEA_TOKEN: "envtok" },
+      credentialsPaths: ["/cred"],
+    });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ source: "env", secret: "envtok" });
+  });
+
+  it("returns an empty array when no source yields a candidate", async () => {
+    mockFiles({});
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      env: {},
+      credentialsPaths: ["/cred"],
+    });
+    expect(candidates).toEqual([]);
+  });
+
+  it("uses repoPath for specificity scoring", async () => {
+    mockFiles({
+      "/cred": "https://oauth2:s1@gitea.example\nhttps://oauth2:s2@gitea.example/owner/repo\n",
+    });
+    const candidates = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      env: {},
+      credentialsPaths: ["/cred"],
+      repoPath: "owner/repo",
+    });
+    // The repo-path-specific entry (s2) should come before the host-only entry (s1)
+    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
+    expect(storeCandidates[0]).toMatchObject({ secret: "s2" });
+    expect(storeCandidates[1]).toMatchObject({ secret: "s1" });
   });
 });

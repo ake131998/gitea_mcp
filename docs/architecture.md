@@ -89,12 +89,12 @@ scripts/
 | File | Responsibility (invariant) |
 |------|----------------------------|
 | `src/index.ts` | The package `main` entry. Re-exports `createServer` and `runServer` from `server.ts` so `import "@amonstack/gitea-mcp"` works for programmatic use. Defines nothing of its own. |
-| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` to resolve the Gitea instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL`, it prints a one-line reason and exits `0` (server intentionally skipped, not broken). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
+| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` to resolve the Gitea instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
 | `src/credentials.ts` | Pure credential candidate state machine — types (`CandidateCredential`, `CredentialDiscoveryResult`, `AuthScheme`) and transition functions (`pickNextAttempt`, `markAttemptFailed`, `markAttemptSucceeded`, `buildAuthHeader`, `orderSchemesForCredentialStore`, `summarizeCandidates`). No I/O, no MCP, no HTTP — a pure leaf both `git-config.ts` (candidate construction) and `gitea-client.ts` (request-time iteration) depend on. |
-| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`), resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list: `[gitea "<baseUrl>"] token` in `.git/config` → `GITEA_TOKEN` env → git credential store entries (`~/.git-credentials` / XDG), host-matched and path-narrowed. Each credential-store candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env,credentialsPaths})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?}`) or `null` when no instance can be found. No MCP/HTTP logic; reads files but swallows only `ENOENT` (rethrows other errors). |
-| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback, and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`. Exports `createServer` and `runServer` (both accept `candidates?: CandidateCredential[]` instead of a single `token`). |
+| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`), resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list: `[gitea "<baseUrl>"] token` in `.git/config` → `GITEA_TOKEN` env → git credential store entries (`~/.git-credentials` / XDG), host-matched and path-narrowed. Each credential-store candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env,credentialsPaths})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?}`) or `null` when no instance can be found. Also exports `discoverCredentialsForHost({baseUrl, cwd?, env?, credentialsPaths?, username?, repoPath?})` for runtime re-discovery against an explicit host (used by the `configure_gitea` tool), with strict `username` filtering of credential-store entries. No MCP/HTTP logic; reads files but swallows only `ENOENT` (rethrows other errors). |
+| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests). |
 | `src/tools.ts` | Exports one Zod schema per tool input. The set of schemas stays 1:1 with the tools registered in `server.ts` and the tool tables in `README.md`. |
-| `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. Owns the `request<T>` helper that iterates the candidate × scheme list (delegating state transitions to `credentials.ts`), the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, and all HTTP methods. Contains no MCP/stdio logic. |
+| `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, and all HTTP methods. Contains no MCP/stdio logic. |
 | `src/skills.ts` | The `gitea-mcp init --tool <name>` implementation: carries the registry of supported target tools and, for the chosen tool, copies every bundled skill (each subdirectory of `dist/assets/skills/` containing a `SKILL.md`) into that tool's skills directory, one folder per skill. No MCP/HTTP logic; no Gitea credentials required. |
 | `src/assets/**` | Markdown guidance content (instructions, resources, the action skills). Pure data, read at runtime; copied into `dist/assets/` by `scripts/copy-assets.mjs` so it ships with the published package. |
 
@@ -187,14 +187,20 @@ instance base URL (an SSH remote like `git@host:owner/repo.git` is mapped to
 `https://<host>`). `GITEA_BASE_URL`, `GITEA_DEFAULT_OWNER`, and
 `GITEA_DEFAULT_REPO` are **optional overrides** that win over the git-derived
 values. With no git remote and no `GITEA_BASE_URL`, `cli.ts` prints a one-line
-reason and exits `0` (the server is intentionally skipped, not crashed).
+notice and starts the server in an **unconfigured** state — business tools throw
+`NotConfiguredError` on invocation, while `tools/list`, `resolve_repo`,
+`gitea_status`, and `configure_gitea` remain usable. The `configure_gitea` tool
+enables session-scoped runtime configuration (see §5.5).
 
 `resolve()` in `server.ts` then applies a per-call fallback so individual tool
 invocations can still omit `owner` / `repo`:
 
 ```
-explicit argument  ─►  (git-discovered or env) default owner/repo  ─►  throw
+explicit argument  ─►  session default owner/repo  ─►  throw
 ```
+
+Session defaults are set at startup from env/git discovery and can be updated
+at runtime by `configure_gitea`.
 
 The `resolve_repo` tool offers an explicit re-detection path: it parses ALL
 remotes (via `git-config.ts`'s `parseRemotes` + `selectRemote`) and returns
@@ -208,12 +214,17 @@ All Gitea calls go through `GiteaClient.request<T>` in `gitea-client.ts`. The
 credential behavior is a small state machine over a `CandidateCredential[]`
 (pure transition functions live in `credentials.ts`; `request<T>` drives them):
 
-- **Candidates** are built once at startup by `discoverConfig()` in priority
-  order: `[gitea "<baseUrl>"]` token → `GITEA_TOKEN` env → git credential-store
-  entries (host-matched, path-narrowed). Config/env candidates carry only the
-  `token` scheme; credential-store candidates carry both `basic` and `token`,
-  ordered by a username heuristic (real username → `basic` first; convention
-  username like `oauth2` → `token` first).
+- **Candidates** are built at startup by `discoverConfig()` (or rebuilt at runtime
+  by `discoverCredentialsForHost()` when `configure_gitea` triggers re-discovery),
+  in priority order: `[gitea "<baseUrl>"]` token → `GITEA_TOKEN` env → git
+  credential-store entries (host-matched, path-narrowed). Config/env candidates
+  carry only the `token` scheme; credential-store candidates carry both `basic`
+  and `token`, ordered by a username heuristic (real username → `basic` first;
+  convention username like `oauth2` → `token` first). When `configure_gitea`
+  provides new candidates, `client.configure()` replaces the entire list with
+  defensive copies whose state machine is fully reset (all back to `pending`) —
+  this prevents an old host's active candidate from sending its old token to a
+  new host.
 - **Per request**, if a candidate is already `active` its locked scheme is
   reused with no probing. Otherwise `pickNextAttempt` walks candidate × scheme
   in priority order; the chosen `{candidate, scheme}` becomes an
@@ -313,9 +324,10 @@ required. `cli.ts` calls `discoverConfig()` (`git-config.ts`) to resolve the
 instance URL, build the credential candidate list from `<cwd>/.git/config`
 remotes plus the git credential store (and the env vars), and derive default
 owner/repo. When no instance can be resolved (no git remote and no
-`GITEA_BASE_URL`), `cli.ts` prints a one-line reason to stderr and exits `0` —
-the server is intentionally skipped, not crashed, so a single global install
-degrades gracefully in non-Gitea directories.
+`GITEA_BASE_URL`), `cli.ts` prints a one-line notice to stderr and starts the
+server in an **unconfigured** state — business tools throw `NotConfiguredError`,
+while `tools/list`, `resolve_repo`, `gitea_status`, and `configure_gitea` remain
+usable so the connection can be established at runtime without restarting.
 
 ## 7. Build & Packaging
 
