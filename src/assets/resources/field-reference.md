@@ -47,7 +47,6 @@ Use this to read results correctly and pick the right identifier.
 - `browser_download_url` (string) — URL to download the file (the tools return
   metadata only; they never download content)
 - `created_at` (string ISO), `uuid` (string)
-- `api_url` (string?) — the API endpoint for this attachment
 - Same shape appears as `attachments` on releases.
 
 ## Repository (embedded on issues)

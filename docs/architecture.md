@@ -247,10 +247,16 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   output (see AGENTS.md §4 Secret Handling). The `gitea_status` diagnostic tool
   surfaces a redacted view via `getCredentialStatus()` → `summarizeCandidates()`
   (`secretPresent: boolean`, masked username `firstChar***`).
-- **CodeQL `js/file-access-to-http` mitigation:** the `Authorization` header
-  intentionally carries file-derived credentials (this pipeline is the point of
-  the discovery + state-machine design), so the flagged data flow at the
-  `doRequest` sink is documented inline and carries a path-scoped
+- **CodeQL `js/file-access-to-http` mitigation:** two designed file → HTTP
+  data flows terminate at the `doRequest` `fetch` sink, and the single
+  path-scoped suppression covers both by design: (1) the `Authorization`
+  header carries file-derived credentials (the point of the discovery +
+  state-machine pipeline), and (2) attachment uploads send the local file the
+  user explicitly asked to attach (`file_path` → `readFile` in the `server.ts`
+  handler → `FormData` body in the client — uploading the named file is the
+  entire purpose of the attachment tools, which require user confirmation per
+  their descriptions and `assets/instructions.md`). Both flows are documented
+  inline at the sink and carry the path-scoped
   `codeql[js/file-access-to-http]` suppression comment with justification. The
   rule stays globally enabled; only this sink is suppressed (see the
   `doRequest` doc comment in `gitea-client.ts`).
