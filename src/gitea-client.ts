@@ -514,7 +514,9 @@ export interface ListActionRunsParams {
 
 // ── Releases ──
 
-export interface ReleaseAttachment {
+// Gitea's generic Attachment model — shared by the issue, issue-comment, and
+// release asset endpoints (field-identical across all three).
+export interface Attachment {
   id: number;
   name: string;
   size: number;
@@ -539,7 +541,7 @@ export interface Release {
   url: string;
   tag_commit?: { sha: string; url: string };
   author?: User;
-  attachments?: ReleaseAttachment[];
+  attachments?: Attachment[];
 }
 
 export interface ListReleasesParams {
@@ -712,12 +714,19 @@ export class GiteaClient {
 
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      // Intentional: `init` carries the file-derived auth header built by
-      // buildAuthHeader (see the doRequest doc comment above). Path-scoped
-      // suppression for this sink; the rule stays globally enabled.
-      // codeql[js/file-access-to-http]
-      init.body = JSON.stringify(body);
+      if (body instanceof FormData) {
+        // Multipart upload (issue/comment attachments): let fetch derive the
+        // Content-Type with its own boundary — a manually set Content-Type
+        // would omit the boundary parameter and break the request.
+        init.body = body;
+      } else {
+        headers["Content-Type"] = "application/json";
+        // Intentional: `init` carries the file-derived auth header built by
+        // buildAuthHeader (see the doRequest doc comment above). Path-scoped
+        // suppression for this sink; the rule stays globally enabled.
+        // codeql[js/file-access-to-http]
+        init.body = JSON.stringify(body);
+      }
     }
 
     // Intentional credential authentication (docs/architecture.md §5.3,
@@ -992,6 +1001,84 @@ export class GiteaClient {
   ): Promise<void> {
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/comments/${id}`;
     return this.request<void>("DELETE", path);
+  }
+
+  // ── Issue attachments ──
+
+  /**
+   * Upload a file as an issue attachment (multipart/form-data). The caller
+   * (server.ts handler) reads the local file; this method stays pure HTTP:
+   * it wraps the given bytes + filename into a FormData with the required
+   * `attachment` field. `name` optionally overrides the stored filename.
+   */
+  async createIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    file: { data: Uint8Array<ArrayBuffer>; name: string },
+    name?: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets`;
+    const form = new FormData();
+    form.append("attachment", new Blob([file.data]), file.name);
+    return this.request<Attachment>("POST", `${path}${name ? `?name=${encodeURIComponent(name)}` : ""}`, form);
+  }
+
+  async listIssueAttachments(
+    owner: string,
+    repo: string,
+    index: number,
+  ): Promise<Attachment[]> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets`;
+    return this.request<Attachment[]>("GET", path);
+  }
+
+  async getIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<Attachment>("GET", path);
+  }
+
+  async editIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+    name: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<Attachment>("PATCH", path, { name });
+  }
+
+  async deleteIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+  ): Promise<void> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<void>("DELETE", path);
+  }
+
+  /**
+   * Upload a file as an attachment on one issue comment (multipart/form-data,
+   * same shape as createIssueAttachment but targeting the comment by id).
+   */
+  async createIssueCommentAttachment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    file: { data: Uint8Array<ArrayBuffer>; name: string },
+    name?: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/comments/${commentId}/assets`;
+    const form = new FormData();
+    form.append("attachment", new Blob([file.data]), file.name);
+    return this.request<Attachment>("POST", `${path}${name ? `?name=${encodeURIComponent(name)}` : ""}`, form);
   }
 
   async listLabels(

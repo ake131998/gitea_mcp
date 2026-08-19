@@ -238,7 +238,9 @@ credential behavior is a small state machine over a `CandidateCredential[]`
 - On total exhaustion the last `GiteaApiError` is re-thrown (preserving the
   `Gitea API error (<status>): <body>` message format).
 - Base URL is normalized (trailing slashes stripped once). Request bodies are
-  JSON; `Content-Type` is set only when a body is present. `204 No Content`
+  JSON — except multipart uploads (issue/comment attachments), which pass a
+  `FormData` so `fetch` derives the `Content-Type` (with boundary) itself;
+  otherwise `Content-Type` is set only when a body is present. `204 No Content`
   resolves to `undefined`. Path segments for `owner` / `repo` are
   `encodeURIComponent`-escaped; query parameters use `URLSearchParams`.
 - Secrets are never logged, interpolated into error messages, or echoed in tool

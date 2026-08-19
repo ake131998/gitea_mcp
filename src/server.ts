@@ -13,6 +13,12 @@ import {
   CreateCommentSchema,
   UpdateCommentSchema,
   DeleteCommentSchema,
+  CreateIssueAttachmentSchema,
+  ListIssueAttachmentsSchema,
+  GetIssueAttachmentSchema,
+  EditIssueAttachmentSchema,
+  DeleteIssueAttachmentSchema,
+  CreateIssueCommentAttachmentSchema,
   ListLabelsSchema,
   CreateLabelSchema,
   UpdateLabelSchema,
@@ -75,7 +81,7 @@ import type { DiscoverCredentialsForHostOptions } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -307,6 +313,118 @@ export async function createServer(
       await client.deleteComment(owner, repo, input.id);
       return {
         content: [{ type: "text", text: `Comment #${input.id} deleted.` }],
+      };
+    },
+  );
+
+  // ── Issue attachments ──
+
+  server.registerTool(
+    "create_issue_attachment",
+    {
+      description:
+        "Upload a local file as an attachment on an issue by its `index` (multipart/form-data). `file_path` reads a LOCAL file from the machine running gitea-mcp — confirm with the user before uploading any file. Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404); oversized files fail 413/422.",
+      inputSchema: CreateIssueAttachmentSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const data = await readFile(input.file_path);
+      const attachment = await client.createIssueAttachment(
+        owner,
+        repo,
+        input.index,
+        { data, name: basename(input.file_path) },
+        input.name,
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(attachment, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_issue_attachments",
+    {
+      description:
+        "List the attachments on one issue by its `index`. Each attachment has `id` (used by get/edit/delete_issue_attachment), `name`, `size`, `download_count`, and `browser_download_url`. RISK: instances can disable attachments (404 means the feature is off).",
+      inputSchema: ListIssueAttachmentsSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const attachments = await client.listIssueAttachments(owner, repo, input.index);
+      return {
+        content: [{ type: "text", text: JSON.stringify(attachments, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_issue_attachment",
+    {
+      description:
+        "Fetch one issue attachment's metadata by `attachment_id` (get the id from list_issue_attachments). Returns `id`, `name`, `size`, `download_count`, `browser_download_url` — it does NOT download the file content.",
+      inputSchema: GetIssueAttachmentSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const attachment = await client.getIssueAttachment(owner, repo, input.index, input.attachment_id);
+      return {
+        content: [{ type: "text", text: JSON.stringify(attachment, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "edit_issue_attachment",
+    {
+      description:
+        "Edit one issue attachment by `attachment_id` — renames it (`name` is the new filename). Get the id from list_issue_attachments.",
+      inputSchema: EditIssueAttachmentSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const attachment = await client.editIssueAttachment(owner, repo, input.index, input.attachment_id, input.name);
+      return {
+        content: [{ type: "text", text: JSON.stringify(attachment, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "delete_issue_attachment",
+    {
+      description:
+        "Delete one issue attachment by `attachment_id` (get the id from list_issue_attachments). IRREVERSIBLE. Confirm the attachment id with the user first.",
+      inputSchema: DeleteIssueAttachmentSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      await client.deleteIssueAttachment(owner, repo, input.index, input.attachment_id);
+      return {
+        content: [{ type: "text", text: `Attachment #${input.attachment_id} deleted from issue #${input.index}.` }],
+      };
+    },
+  );
+
+  server.registerTool(
+    "create_issue_comment_attachment",
+    {
+      description:
+        "Upload a local file as an attachment on one issue COMMENT by its `comment_id` (get the id from list_comments; multipart/form-data, same shape as create_issue_attachment). `file_path` reads a LOCAL file — confirm with the user before uploading. Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404).",
+      inputSchema: CreateIssueCommentAttachmentSchema.shape,
+    },
+    async (input) => {
+      const { owner, repo } = resolve(input);
+      const data = await readFile(input.file_path);
+      const attachment = await client.createIssueCommentAttachment(
+        owner,
+        repo,
+        input.comment_id,
+        { data, name: basename(input.file_path) },
+        input.name,
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(attachment, null, 2) }],
       };
     },
   );

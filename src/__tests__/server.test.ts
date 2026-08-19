@@ -13,6 +13,8 @@ vi.mock("node:fs/promises", () => ({
 const CLIENT_METHODS = [
   "listIssues", "getIssue", "createIssue", "updateIssue", "deleteIssue", "searchIssues",
   "listComments", "createComment", "updateComment", "deleteComment",
+  "createIssueAttachment", "listIssueAttachments", "getIssueAttachment",
+  "editIssueAttachment", "deleteIssueAttachment", "createIssueCommentAttachment",
   "listLabels", "createLabel", "updateLabel", "deleteLabel",
   "addIssueLabels", "removeIssueLabel", "replaceIssueLabels", "clearIssueLabels",
   "listIssueDependencies", "addIssueDependency", "removeIssueDependency",
@@ -44,6 +46,8 @@ function registeredTools(server: { _registeredTools: Record<string, RegisteredTo
 const EXPECTED_TOOLS = [
   "list_issues", "get_issue", "create_issue", "update_issue", "delete_issue", "search_issues",
   "list_comments", "create_comment", "update_comment", "delete_comment",
+  "create_issue_attachment", "list_issue_attachments", "get_issue_attachment",
+  "edit_issue_attachment", "delete_issue_attachment", "create_issue_comment_attachment",
   "list_labels", "create_label", "update_label", "delete_label",
   "add_issue_labels", "remove_issue_label", "replace_issue_labels", "clear_issue_labels",
   "list_issue_dependencies", "add_issue_dependency", "remove_issue_dependency",
@@ -175,6 +179,97 @@ describe("tool handlers", () => {
     const server = await createServer("https://g", undefined, "o", "r");
     await registeredTools(server as never)["create_comment"].handler({ index: 3, body: "hi" });
     expect(mockClient.createComment).toHaveBeenCalledWith("o", "r", 3, "hi");
+  });
+
+  it("create_issue_attachment reads the file and forwards bytes + basename", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([1, 2, 3]);
+    vi.mocked(readFile).mockResolvedValue(bytes as never);
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 5, name: "log.txt" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: "/tmp/some/dir/log.txt",
+    });
+    expect(readFile).toHaveBeenCalledWith("/tmp/some/dir/log.txt");
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: bytes, name: "log.txt" },
+      undefined,
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: 5, name: "log.txt" });
+  });
+
+  it("create_issue_attachment passes the explicit name through", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([1]);
+    vi.mocked(readFile).mockResolvedValue(bytes as never);
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 6 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: "/tmp/log.txt",
+      name: "renamed.txt",
+    });
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: bytes, name: "log.txt" },
+      "renamed.txt",
+    );
+  });
+
+  it("list_issue_attachments returns JSON of the client result", async () => {
+    const { createServer } = await import("../server.js");
+    const attachments = [{ id: 5, name: "log.txt" }];
+    mockClient.listIssueAttachments.mockResolvedValue(attachments);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_issue_attachments"].handler({ index: 3 });
+    expect(mockClient.listIssueAttachments).toHaveBeenCalledWith("o", "r", 3);
+    expect(JSON.parse(result.content[0].text)).toEqual(attachments);
+  });
+
+  it("get_issue_attachment forwards index and attachment_id", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.getIssueAttachment.mockResolvedValue({ id: 5 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["get_issue_attachment"].handler({ index: 3, attachment_id: 5 });
+    expect(mockClient.getIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5);
+  });
+
+  it("edit_issue_attachment forwards the new name", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.editIssueAttachment.mockResolvedValue({ id: 5, name: "new.txt" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["edit_issue_attachment"].handler({ index: 3, attachment_id: 5, name: "new.txt" });
+    expect(mockClient.editIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5, "new.txt");
+  });
+
+  it("delete_issue_attachment deletes and returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.deleteIssueAttachment.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["delete_issue_attachment"].handler({ index: 3, attachment_id: 5 });
+    expect(mockClient.deleteIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5);
+    expect(result.content[0].text).toBe("Attachment #5 deleted from issue #3.");
+  });
+
+  it("create_issue_comment_attachment reads the file and forwards bytes + basename", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([9, 9]);
+    vi.mocked(readFile).mockResolvedValue(bytes as never);
+    mockClient.createIssueCommentAttachment.mockResolvedValue({ id: 7, name: "shot.png" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_issue_comment_attachment"].handler({
+      comment_id: 42,
+      file_path: "/tmp/shot.png",
+    });
+    expect(readFile).toHaveBeenCalledWith("/tmp/shot.png");
+    expect(mockClient.createIssueCommentAttachment).toHaveBeenCalledWith(
+      "o", "r", 42,
+      { data: bytes, name: "shot.png" },
+      undefined,
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: 7, name: "shot.png" });
   });
 
   it("remove_issue_label returns a confirmation string", async () => {

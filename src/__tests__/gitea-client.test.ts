@@ -388,6 +388,90 @@ describe("GiteaClient", () => {
     });
   });
 
+  describe("issue attachments", () => {
+    it("createIssueAttachment posts multipart FormData with the attachment part", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 1, name: "log.txt" }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      const result = await client.createIssueAttachment("o", "r", 5, { data: new Uint8Array([104, 105]), name: "log.txt" });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeInstanceOf(FormData);
+      // fetch derives Content-Type with its own boundary — a manually set
+      // header would omit the boundary parameter and break the request.
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
+      const part = (init.body as FormData).get("attachment");
+      expect(part).toBeInstanceOf(Blob);
+      expect((part as File).name).toBe("log.txt");
+      expect(result).toEqual({ id: 1, name: "log.txt" });
+    });
+
+    it("createIssueAttachment appends the name query when renaming", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 2 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.createIssueAttachment("o", "r", 5, { data: new Uint8Array([1]), name: "a b.txt" }, "renamed.txt");
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets?name=renamed.txt");
+      expect((init.body as FormData).get("attachment")).toBeInstanceOf(Blob);
+    });
+
+    it("listIssueAttachments builds the assets path", async () => {
+      const fetchMock = stubFetch(buildResponse([]));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.listIssueAttachments("o", "r", 5);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets");
+      expect(init.method).toBe("GET");
+    });
+
+    it("getIssueAttachment builds the asset path with the id", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 7 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.getIssueAttachment("o", "r", 5, 7);
+      const { url } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets/7");
+    });
+
+    it("editIssueAttachment patches the name", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 7, name: "new.txt" }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.editIssueAttachment("o", "r", 5, 7, "new.txt");
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets/7");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(init.body as string)).toEqual({ name: "new.txt" });
+    });
+
+    it("deleteIssueAttachment sends DELETE and resolves on 204", async () => {
+      const fetchMock = stubFetch(buildResponse(undefined, 204));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.deleteIssueAttachment("o", "r", 5, 7);
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/5/assets/7");
+      expect(init.method).toBe("DELETE");
+    });
+
+    it("createIssueCommentAttachment posts multipart to the comment assets path", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 9 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.createIssueCommentAttachment("o", "r", 42, { data: new Uint8Array([1, 2]), name: "shot.png" });
+      const { url, init } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/comments/42/assets");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBeInstanceOf(FormData);
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
+      expect(((init.body as FormData).get("attachment") as File).name).toBe("shot.png");
+    });
+
+    it("createIssueCommentAttachment appends the name query when renaming", async () => {
+      const fetchMock = stubFetch(buildResponse({ id: 10 }));
+      const client = new GiteaClient({ baseUrl: "https://g", token: "t" });
+      await client.createIssueCommentAttachment("o", "r", 42, { data: new Uint8Array([1]), name: "a.png" }, "renamed.png");
+      const { url } = lastCall(fetchMock);
+      expect(url).toBe("https://g/api/v1/repos/o/r/issues/comments/42/assets?name=renamed.png");
+    });
+  });
+
   describe("labels", () => {
     it("listLabels builds pagination query", async () => {
       const fetchMock = stubFetch(buildResponse([]));

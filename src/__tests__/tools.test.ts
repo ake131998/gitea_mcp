@@ -34,6 +34,12 @@ import {
   CheckIssueBlockedSchema,
   ListProjectsSchema,
   GetProjectSchema,
+  CreateIssueAttachmentSchema,
+  ListIssueAttachmentsSchema,
+  GetIssueAttachmentSchema,
+  EditIssueAttachmentSchema,
+  DeleteIssueAttachmentSchema,
+  CreateIssueCommentAttachmentSchema,
 } from "../tools.js";
 
 describe("ListIssuesSchema", () => {
@@ -580,5 +586,103 @@ describe("GetProjectSchema", () => {
     expect(result.id).toBe(5);
     expect(result.owner).toBe("o");
     expect(result.repo).toBe("r");
+  });
+});
+
+// ── Issue attachments ──
+
+describe("CreateIssueAttachmentSchema", () => {
+  it("requires index and file_path", () => {
+    const result = CreateIssueAttachmentSchema.safeParse({ index: 5 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an empty file_path", () => {
+    const result = CreateIssueAttachmentSchema.safeParse({ index: 5, file_path: "" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index + file_path with optional name", () => {
+    const result = CreateIssueAttachmentSchema.parse({
+      owner: "o",
+      repo: "r",
+      index: 5,
+      file_path: "/tmp/log.txt",
+      name: "renamed.txt",
+    });
+    expect(result.index).toBe(5);
+    expect(result.file_path).toBe("/tmp/log.txt");
+    expect(result.name).toBe("renamed.txt");
+  });
+});
+
+describe("ListIssueAttachmentsSchema", () => {
+  it("requires index", () => {
+    const result = ListIssueAttachmentsSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index with optional owner/repo", () => {
+    const result = ListIssueAttachmentsSchema.parse({ owner: "o", repo: "r", index: 5 });
+    expect(result.index).toBe(5);
+  });
+});
+
+describe("GetIssueAttachmentSchema", () => {
+  it("requires index and attachment_id", () => {
+    const result = GetIssueAttachmentSchema.safeParse({ index: 5 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a non-positive attachment_id", () => {
+    const result = GetIssueAttachmentSchema.safeParse({ index: 5, attachment_id: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index + attachment_id", () => {
+    const result = GetIssueAttachmentSchema.parse({ index: 5, attachment_id: 7 });
+    expect(result.attachment_id).toBe(7);
+  });
+});
+
+describe("EditIssueAttachmentSchema", () => {
+  it("requires name", () => {
+    const result = EditIssueAttachmentSchema.safeParse({ index: 5, attachment_id: 7 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index + attachment_id + name", () => {
+    const result = EditIssueAttachmentSchema.parse({ index: 5, attachment_id: 7, name: "new.txt" });
+    expect(result.name).toBe("new.txt");
+  });
+});
+
+describe("DeleteIssueAttachmentSchema", () => {
+  it("requires index and attachment_id", () => {
+    const result = DeleteIssueAttachmentSchema.safeParse({ index: 5 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts index + attachment_id", () => {
+    const result = DeleteIssueAttachmentSchema.parse({ index: 5, attachment_id: 7 });
+    expect(result.index).toBe(5);
+    expect(result.attachment_id).toBe(7);
+  });
+});
+
+describe("CreateIssueCommentAttachmentSchema", () => {
+  it("requires comment_id and file_path", () => {
+    const result = CreateIssueCommentAttachmentSchema.safeParse({ comment_id: 42 });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts comment_id + file_path with optional name", () => {
+    const result = CreateIssueCommentAttachmentSchema.parse({
+      comment_id: 42,
+      file_path: "/tmp/shot.png",
+      name: "renamed.png",
+    });
+    expect(result.comment_id).toBe(42);
+    expect(result.name).toBe("renamed.png");
   });
 });

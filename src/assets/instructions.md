@@ -46,6 +46,16 @@ prefer `replace_issue_labels` (name-based) when you want a known final set.
 `list_comments` returns each comment's `id`. Never reuse an issue number where a
 comment id is required.
 
+## Attachments upload LOCAL files
+
+`create_issue_attachment` / `create_issue_comment_attachment` read `file_path`
+from the machine running gitea-mcp and upload it as multipart/form-data. Confirm
+with the user before uploading any file. Optional `name` overrides the stored
+filename (default: the file's basename). Attachments are identified by
+`attachment_id` from `list_issue_attachments`; `edit_issue_attachment` only
+renames, `delete_issue_attachment` is IRREVERSIBLE. Instances can disable
+attachments (404) and cap the upload size (413/422).
+
 ## Pagination
 
 List endpoints are 1-based: `page` starts at 1, `limit` max 100. To fetch everything,
@@ -57,6 +67,7 @@ assume one page is complete.
 These are irreversible on most Gitea instances (no trash/recycle):
 
 - `delete_issue`, `delete_label`, `delete_milestone`, `delete_comment`
+- `delete_issue_attachment`
 - `clear_issue_labels`, `replace_issue_labels` (replaces the ENTIRE label set)
 - `replace_topics` (replaces the ENTIRE topic set; pass `[]` to clear all topics)
 - `merge_pull_request` (IRREVERSIBLE — merging is final; confirm the index and strategy)

@@ -267,6 +267,20 @@ gitea-mcp
 | `update_comment` | 按 `id` 更新评论 |
 | `delete_comment` | 按 `id` 删除评论 |
 
+### 议题附件 (Issue Attachments)
+
+| 工具 | 说明 |
+|------|------|
+| `create_issue_attachment` | 将本地文件（`file_path`）上传为议题（`index`）的附件，可选 `name` 重命名 |
+| `list_issue_attachments` | 列出议题的附件 |
+| `get_issue_attachment` | 按 `attachment_id` 获取单个附件的元数据 |
+| `edit_issue_attachment` | 按 `attachment_id` 重命名附件 |
+| `delete_issue_attachment` | 按 `attachment_id` 删除附件 |
+| `create_issue_comment_attachment` | 将本地文件上传为评论（`comment_id`）的附件，可选 `name` 重命名 |
+
+> **说明：** 附件工具的 `file_path` 读取运行 `gitea-mcp` 的机器上的本地文件。
+> 实例可能禁用附件功能（返回 404 表示未开启），并限制上传大小（超限返回 413/422）。
+
 ### 标签 (Labels)
 
 | 工具 | 说明 |

@@ -85,6 +85,52 @@ export const DeleteCommentSchema = z.object({
   id: z.number().int().min(1).describe("Comment ID"),
 });
 
+// ── Issue attachments ──
+
+export const CreateIssueAttachmentSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  file_path: z.string().min(1).describe("Local path to the file to upload"),
+  name: z.string().optional().describe("Attachment name stored on the server (defaults to the file's basename)"),
+});
+
+export const ListIssueAttachmentsSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+});
+
+export const GetIssueAttachmentSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  attachment_id: z.number().int().min(1).describe("Attachment ID"),
+});
+
+export const EditIssueAttachmentSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  attachment_id: z.number().int().min(1).describe("Attachment ID"),
+  name: z.string().describe("New attachment name"),
+});
+
+export const DeleteIssueAttachmentSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  index: z.number().int().min(1).describe("Issue number"),
+  attachment_id: z.number().int().min(1).describe("Attachment ID"),
+});
+
+export const CreateIssueCommentAttachmentSchema = z.object({
+  owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
+  repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
+  comment_id: z.number().int().min(1).describe("Comment ID"),
+  file_path: z.string().min(1).describe("Local path to the file to upload"),
+  name: z.string().optional().describe("Attachment name stored on the server (defaults to the file's basename)"),
+});
+
 export const ListLabelsSchema = z.object({
   owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
   repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
