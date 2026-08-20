@@ -153,11 +153,15 @@ function isSensitiveUploadPath(canonical: string): boolean {
   return false;
 }
 
-/** Compute the confining upload root: GITEA_UPLOAD_ROOT when set (canonicalized), else process.cwd(). */
-async function resolveUploadRoot(env: NodeJS.ProcessEnv): Promise<string> {
-  const configured = env.GITEA_UPLOAD_ROOT;
+/** Compute the confining upload root: GITEA_UPLOAD_ROOT when set (canonicalized), else process.cwd(). Throws a generic (path-free) error when the configured root cannot be resolved. */
+async function resolveUploadRoot(): Promise<string> {
+  const configured = process.env.GITEA_UPLOAD_ROOT;
   if (configured === undefined || configured === "") return process.cwd();
-  return realpath(configured);
+  try {
+    return await realpath(configured);
+  } catch {
+    throw new Error("Attachment upload rejected: GITEA_UPLOAD_ROOT does not resolve to an existing path.");
+  }
 }
 
 /**
@@ -185,7 +189,7 @@ function extnameLower(path: string): string {
  * Returns the file bytes plus the basename to store on the server. Throws a
  * generic Error (no local path, no underlying errno message) on any rejection.
  */
-async function readUploadFile(filePath: string, env: NodeJS.ProcessEnv = process.env): Promise<{ data: Uint8Array<ArrayBuffer>; name: string }> {
+async function readUploadFile(filePath: string): Promise<{ data: Uint8Array<ArrayBuffer>; name: string }> {
   if (filePath !== filePath.trim() || filePath.length === 0) {
     throw new Error("file_path is empty or whitespace-only.");
   }
@@ -197,7 +201,7 @@ async function readUploadFile(filePath: string, env: NodeJS.ProcessEnv = process
   } catch {
     throw new Error("Attachment upload rejected: file not found (the path must exist inside the upload root).");
   }
-  const root = await resolveUploadRoot(env);
+  const root = await resolveUploadRoot();
   const rel = relativePath(root, canonical);
   if (rel === undefined) {
     throw new Error("Attachment upload rejected: file_path escapes the upload root. Set GITEA_UPLOAD_ROOT to the directory uploads may come from.");

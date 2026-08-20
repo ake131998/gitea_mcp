@@ -1195,6 +1195,32 @@ describe("attachment upload confinement (Issue #76)", () => {
     ).rejects.toThrow(/escapes the upload root/);
   });
 
+  it("rejects pseudo-filesystem paths by the deny-list even when inside the root", async () => {
+    if (process.platform === "win32") return; // /proc does not exist on Windows
+    process.env.GITEA_UPLOAD_ROOT = "/";
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: "/proc/version",
+      }),
+    ).rejects.toThrow(/sensitive file or location/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic error when GITEA_UPLOAD_ROOT itself does not resolve", async () => {
+    process.env.GITEA_UPLOAD_ROOT = join(uploadRoot, "missing-root");
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await writeFile(join(tmpdir(), "probe-root.txt"), new Uint8Array([1])).catch(() => {});
+    const err = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3, file_path: join(tmpdir(), "probe-root.txt"),
+    }).catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/GITEA_UPLOAD_ROOT does not resolve/);
+    expect((err as Error).message).not.toContain("missing-root");
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
   it("treats the upload root itself as a directory, not an uploadable file", async () => {
     const { createServer } = await import("../server.js");
     const server = await createServer("https://g", undefined, "o", "r");
