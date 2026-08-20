@@ -92,6 +92,7 @@ projects. Set them only to override the discovery.
 | `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after a `.git/config [gitea]` token and before the git credential store (see [Token discovery](#token-discovery)). |
 | `GITEA_DEFAULT_OWNER` | No | Default repository owner — skip passing `owner` on every call |
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
+| `GITEA_UPLOAD_ROOT` | No | Root directory that attachment uploads (`create_issue_attachment` / `create_issue_comment_attachment`) may read from. Defaults to the server's working directory; the resolved path must stay inside this root. |
 
 ### How auto-discovery works
 
@@ -280,6 +281,21 @@ gitea-mcp
 | `create_comment` | Add a comment to an issue |
 | `update_comment` | Update a comment by `id` |
 | `delete_comment` | Delete a comment by `id` |
+
+### Issue Attachments
+
+| Tool | Description |
+|------|-------------|
+| `create_issue_attachment` | Upload a local file (`file_path`) as an attachment on an issue (`index`), optional `name`. The path is confined to the upload root (cwd or `GITEA_UPLOAD_ROOT`), extension-allow-listed, and size-capped |
+| `list_issue_attachments` | List the attachments on an issue |
+| `get_issue_attachment` | Get one attachment's metadata by `attachment_id` |
+| `edit_issue_attachment` | Rename an attachment by `attachment_id` |
+| `delete_issue_attachment` | Delete an attachment by `attachment_id` |
+| `create_issue_comment_attachment` | Upload a local file as an attachment on a comment (`comment_id`), optional `name`; same path confinement as `create_issue_attachment` |
+
+> **Note:** attachment tools read `file_path` from the machine running
+> `gitea-mcp`. Instances can disable attachments (a 404 means the feature is
+> off) and cap the upload size (oversize fails 413/422).
 
 ### Labels
 

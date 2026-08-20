@@ -1,18 +1,48 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { GiteaClient } from "../gitea-client.js";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, rm, chmod } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 vi.mock("../gitea-client.js", () => ({
   GiteaClient: vi.fn(),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  readFile: vi.fn(),
-}));
+// readFile is wrapped (not replaced): the default implementation delegates to
+// the real one. resolve_repo / instructions tests override it per-call with
+// mockResolvedValue/mockImplementation — vi.clearAllMocks() does NOT remove
+// those, so each such test MUST restore the delegate at the end via
+// restoreReadFile(). The attachment-confinement tests then exercise the REAL
+// readFile; realpath/stat and the temp-dir writes below always use the real
+// filesystem, since readUploadFile's security behavior (symlink escape,
+// canonical basename, stat-before-read) can only be asserted against the
+// real fs, mirroring guidance.test.ts's real-asset reads.
+const realReadFileRef = (await vi.importActual<
+  typeof import("node:fs/promises")
+>("node:fs/promises")).readFile;
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const wrappedReadFile = vi.fn(async (...args: Parameters<typeof actual.readFile>) =>
+    actual.readFile(...args));
+  return {
+    ...actual,
+    readFile: wrappedReadFile,
+  };
+});
+
+import { readFile } from "node:fs/promises";
+
+/** Restore the delegating readFile implementation after a per-test override. */
+function restoreReadFile(): void {
+  vi.mocked(readFile).mockImplementation(async (...args: Parameters<typeof realReadFileRef>) =>
+    realReadFileRef(...args) as never);
+}
 
 const CLIENT_METHODS = [
   "listIssues", "getIssue", "createIssue", "updateIssue", "deleteIssue", "searchIssues",
   "listComments", "createComment", "updateComment", "deleteComment",
+  "createIssueAttachment", "listIssueAttachments", "getIssueAttachment",
+  "editIssueAttachment", "deleteIssueAttachment", "createIssueCommentAttachment",
   "listLabels", "createLabel", "updateLabel", "deleteLabel",
   "addIssueLabels", "removeIssueLabel", "replaceIssueLabels", "clearIssueLabels",
   "listIssueDependencies", "addIssueDependency", "removeIssueDependency",
@@ -41,9 +71,23 @@ function registeredTools(server: { _registeredTools: Record<string, RegisteredTo
   return server._registeredTools;
 }
 
+// Real temp-dir upload root for the attachment-confinement tests. The
+// node:fs/promises mock was removed on purpose: readUploadFile's security
+// behavior (realpath, symlink escape, stat-before-read) can only be asserted
+// against the real filesystem, mirroring guidance.test.ts's real-asset reads.
+let uploadRoot: string;
+const savedUploadRoot = process.env.GITEA_UPLOAD_ROOT;
+
+async function resetUploadRoot() {
+  uploadRoot = await mkdtemp(join(tmpdir(), "gitea-mcp-upload-"));
+  process.env.GITEA_UPLOAD_ROOT = uploadRoot;
+}
+
 const EXPECTED_TOOLS = [
   "list_issues", "get_issue", "create_issue", "update_issue", "delete_issue", "search_issues",
   "list_comments", "create_comment", "update_comment", "delete_comment",
+  "create_issue_attachment", "list_issue_attachments", "get_issue_attachment",
+  "edit_issue_attachment", "delete_issue_attachment", "create_issue_comment_attachment",
   "list_labels", "create_label", "update_label", "delete_label",
   "add_issue_labels", "remove_issue_label", "replace_issue_labels", "clear_issue_labels",
   "list_issue_dependencies", "add_issue_dependency", "remove_issue_dependency",
@@ -135,6 +179,7 @@ describe("tool handlers", () => {
     mockClient = {};
     for (const m of CLIENT_METHODS) mockClient[m] = vi.fn();
     vi.mocked(GiteaClient).mockImplementation(function () { return mockClient; } as never);
+    await resetUploadRoot();
   });
 
   it("list_issues returns JSON of the client result", async () => {
@@ -175,6 +220,95 @@ describe("tool handlers", () => {
     const server = await createServer("https://g", undefined, "o", "r");
     await registeredTools(server as never)["create_comment"].handler({ index: 3, body: "hi" });
     expect(mockClient.createComment).toHaveBeenCalledWith("o", "r", 3, "hi");
+  });
+
+  it("create_issue_attachment reads the file and forwards bytes + basename", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([1, 2, 3]);
+    await writeFile(join(uploadRoot, "log.txt"), bytes);
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 5, name: "log.txt" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: join(uploadRoot, "log.txt"),
+    });
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: expect.any(Uint8Array), name: "log.txt" },
+      undefined,
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: 5, name: "log.txt" });
+  });
+
+  it("create_issue_attachment passes the explicit name through", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([1]);
+    await writeFile(join(uploadRoot, "log.txt"), bytes);
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 6 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: join(uploadRoot, "log.txt"),
+      name: "renamed.txt",
+    });
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: expect.any(Uint8Array), name: "log.txt" },
+      "renamed.txt",
+    );
+  });
+
+  it("list_issue_attachments returns JSON of the client result", async () => {
+    const { createServer } = await import("../server.js");
+    const attachments = [{ id: 5, name: "log.txt" }];
+    mockClient.listIssueAttachments.mockResolvedValue(attachments);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["list_issue_attachments"].handler({ index: 3 });
+    expect(mockClient.listIssueAttachments).toHaveBeenCalledWith("o", "r", 3);
+    expect(JSON.parse(result.content[0].text)).toEqual(attachments);
+  });
+
+  it("get_issue_attachment forwards index and attachment_id", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.getIssueAttachment.mockResolvedValue({ id: 5 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["get_issue_attachment"].handler({ index: 3, attachment_id: 5 });
+    expect(mockClient.getIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5);
+  });
+
+  it("edit_issue_attachment forwards the new name", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.editIssueAttachment.mockResolvedValue({ id: 5, name: "new.txt" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["edit_issue_attachment"].handler({ index: 3, attachment_id: 5, name: "new.txt" });
+    expect(mockClient.editIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5, "new.txt");
+  });
+
+  it("delete_issue_attachment deletes and returns a confirmation string", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.deleteIssueAttachment.mockResolvedValue(undefined);
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["delete_issue_attachment"].handler({ index: 3, attachment_id: 5 });
+    expect(mockClient.deleteIssueAttachment).toHaveBeenCalledWith("o", "r", 3, 5);
+    expect(result.content[0].text).toBe("Attachment #5 deleted from issue #3.");
+  });
+
+  it("create_issue_comment_attachment reads the file and forwards bytes + basename", async () => {
+    const { createServer } = await import("../server.js");
+    const bytes = new Uint8Array([9, 9]);
+    await writeFile(join(uploadRoot, "shot.png"), bytes);
+    mockClient.createIssueCommentAttachment.mockResolvedValue({ id: 7, name: "shot.png" });
+    const server = await createServer("https://g", undefined, "o", "r");
+    const result = await registeredTools(server as never)["create_issue_comment_attachment"].handler({
+      comment_id: 42,
+      file_path: join(uploadRoot, "shot.png"),
+    });
+    expect(mockClient.createIssueCommentAttachment).toHaveBeenCalledWith(
+      "o", "r", 42,
+      { data: expect.any(Uint8Array), name: "shot.png" },
+      undefined,
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: 7, name: "shot.png" });
   });
 
   it("remove_issue_label returns a confirmation string", async () => {
@@ -672,6 +806,7 @@ describe("resolve_repo handler", () => {
         origin: { baseUrl: "https://gitea.example", owner: "owner", repo: "repo", url: "git@gitea.example:owner/repo.git" },
       },
     });
+    restoreReadFile();
   });
 
   it("parses an HTTPS remote URL without .git suffix", async () => {
@@ -685,6 +820,7 @@ describe("resolve_repo handler", () => {
       repo: "repo",
       remote: "origin",
     });
+    restoreReadFile();
   });
 
   it("prefers the upstream remote over origin and surfaces both", async () => {
@@ -699,6 +835,7 @@ describe("resolve_repo handler", () => {
     expect(parsed.owner).toBe("upstream");
     expect(parsed.remote_url).toBe("https://gitea.example/upstream/repo.git");
     expect(Object.keys(parsed.remotes).sort()).toEqual(["origin", "upstream"]);
+    restoreReadFile();
   });
 
   it("throws when no parseable remotes are found", async () => {
@@ -708,6 +845,7 @@ describe("resolve_repo handler", () => {
     await expect(
       registeredTools(server as never)["resolve_repo"].handler({ path: "/repo" }),
     ).rejects.toThrow("No parseable git remotes found");
+    restoreReadFile();
   });
 
   it("throws when the remote URL cannot be parsed", async () => {
@@ -717,6 +855,7 @@ describe("resolve_repo handler", () => {
     await expect(
       registeredTools(server as never)["resolve_repo"].handler({ path: "/repo" }),
     ).rejects.toThrow("No parseable git remotes found");
+    restoreReadFile();
   });
 
   it("follows gitdir -> commondir when run inside a git worktree", async () => {
@@ -735,6 +874,7 @@ describe("resolve_repo handler", () => {
       repo: "repo",
       baseUrl: "https://gitea.example",
     });
+    restoreReadFile();
   });
 });
 
@@ -850,5 +990,291 @@ describe("configure_gitea tool", () => {
       base_url: "https://g.example",
     });
     expect(result.content[0].text).not.toContain("super-secret-token");
+  });
+});
+
+describe("attachment upload confinement (Issue #76)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockClient = {};
+    for (const m of CLIENT_METHODS) mockClient[m] = vi.fn();
+    vi.mocked(GiteaClient).mockImplementation(function () { return mockClient; } as never);
+    await resetUploadRoot();
+  });
+
+  afterEach(async () => {
+    if (savedUploadRoot === undefined) delete process.env.GITEA_UPLOAD_ROOT;
+    else process.env.GITEA_UPLOAD_ROOT = savedUploadRoot;
+    if (uploadRoot) await rm(uploadRoot, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("forwards realpath-resolved basename, not the raw argument", async () => {
+    await writeFile(join(uploadRoot, "log.txt"), new Uint8Array([1, 2, 3]));
+    // A traversal-heavy alias still resolves inside the root: allowed, and the
+    // stored filename is the canonical basename.
+    const path = join(uploadRoot, "sub", "..", "log.txt");
+    const { createServer } = await import("../server.js");
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 5 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: path,
+    });
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: expect.any(Uint8Array), name: "log.txt" },
+      undefined,
+    );
+  });
+
+  it("rejects a path that escapes the upload root, without echoing the path", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    // /etc/hostname exists on the test host; the confinement must reject it
+    // before any read, and the error must not contain the local path.
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3,
+        file_path: "/etc/hostname",
+      }),
+    ).rejects.toThrow(/escapes the upload root/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects .. traversal that resolves outside the root", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3,
+        file_path: join(uploadRoot, "..", "..", "etc", "hostname"),
+      }),
+    ).rejects.toThrow(/escapes the upload root/);
+  });
+
+  it("rejects a symlink that escapes the upload root", async () => {
+    await symlink("/etc/hostname", join(uploadRoot, "evil.txt"));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3,
+        file_path: join(uploadRoot, "evil.txt"),
+      }),
+    ).rejects.toThrow(/escapes the upload root/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("allows a symlink that stays inside the upload root", async () => {
+    await writeFile(join(uploadRoot, "real.md"), new Uint8Array([7]));
+    await symlink(join(uploadRoot, "real.md"), join(uploadRoot, "alias.md"));
+    const { createServer } = await import("../server.js");
+    mockClient.createIssueAttachment.mockResolvedValue({ id: 8 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: join(uploadRoot, "alias.md"),
+    });
+    expect(mockClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: expect.any(Uint8Array), name: "real.md" },
+      undefined,
+    );
+  });
+
+  it("rejects sensitive locations even inside the root (.env*, .git, key material)", async () => {
+    await writeFile(join(uploadRoot, ".env"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, ".env.local"), new Uint8Array([1]));
+    await mkdir(join(uploadRoot, "repo.git"));
+    await writeFile(join(uploadRoot, "repo.git", "config"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, "id_rsa"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, "server.pem"), new Uint8Array([1]));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    for (const name of [".env", ".env.local", join("repo.git", "config"), "id_rsa", "server.pem"]) {
+      await expect(
+        registeredTools(server as never)["create_issue_attachment"].handler({
+          index: 3,
+          file_path: join(uploadRoot, name),
+        }),
+      ).rejects.toThrow(/sensitive file or location/);
+    }
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects the remaining sensitive-location branches (gitconfig regex, /sys, /dev, home dirs)", async () => {
+    await writeFile(join(uploadRoot, ".gitconfig"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, ".git-credentials"), new Uint8Array([1]));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    const handler = registeredTools(server as never)["create_issue_attachment"].handler;
+    // git-config/credentials basename regex branch
+    for (const name of [".gitconfig", ".git-credentials"]) {
+      await expect(handler({ index: 3, file_path: join(uploadRoot, name) }))
+        .rejects.toThrow(/sensitive file or location/);
+    }
+    // pseudo-filesystem branches (/sys, /dev) and home-dir suffixes, via a
+    // root that contains them: reuse the "/" root trick for /sys and /dev.
+    if (process.platform !== "win32") {
+      process.env.GITEA_UPLOAD_ROOT = "/";
+      await expect(handler({ index: 3, file_path: "/sys" })).rejects.toThrow(/sensitive file or location/);
+      await expect(handler({ index: 3, file_path: "/dev" })).rejects.toThrow(/sensitive file or location/);
+      const home = process.env.HOME ?? "/root";
+      await mkdir(join(home, ".ssh"), { recursive: true }).catch(() => {});
+      await writeFile(join(home, ".ssh", "config"), new Uint8Array([1])).catch(() => {});
+      // `config` alone is not deny-listed by basename; the /.ssh/ directory
+      // suffix is what must reject it (the homeSuffix branch).
+      await expect(handler({ index: 3, file_path: join(home, ".ssh", "config") }))
+        .rejects.toThrow(/sensitive file or location/);
+      await rm(join(home, ".ssh", "config"), { force: true }).catch(() => {});
+    }
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects extensions outside the allow-list", async () => {
+    await writeFile(join(uploadRoot, "payload.exe"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, "noext"), new Uint8Array([1]));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: join(uploadRoot, "payload.exe"),
+      }),
+    ).rejects.toThrow(/not in the upload allow-list/);
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: join(uploadRoot, "noext"),
+      }),
+    ).rejects.toThrow(/not in the upload allow-list/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejects files over the size cap before reading bytes", async () => {
+    const big = join(uploadRoot, "big.log");
+    // Create a sparse file whose stat size exceeds the 50 MiB cap without
+    // materializing the bytes: truncate extends the file with a hole.
+    const { truncate } = await import("node:fs/promises");
+    await writeFile(big, new Uint8Array([0]));
+    await truncate(big, 50 * 1024 * 1024 + 1);
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: big,
+      }),
+    ).rejects.toThrow(/over the \d+ byte cap/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("returns a path-free generic error for missing files (no existence oracle)", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    const missing = join(uploadRoot, "does-not-exist.txt");
+    const err = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3, file_path: missing,
+    }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toContain(missing);
+    expect((err as Error).message).not.toContain("ENOENT");
+  });
+
+  it("applies the same confinement to create_issue_comment_attachment", async () => {
+    await writeFile(join(uploadRoot, "ok.txt"), new Uint8Array([4]));
+    const { createServer } = await import("../server.js");
+    mockClient.createIssueCommentAttachment.mockResolvedValue({ id: 9 });
+    const server = await createServer("https://g", undefined, "o", "r");
+    await registeredTools(server as never)["create_issue_comment_attachment"].handler({
+      comment_id: 42,
+      file_path: join(uploadRoot, "ok.txt"),
+    });
+    expect(mockClient.createIssueCommentAttachment).toHaveBeenCalledWith(
+      "o", "r", 42,
+      { data: expect.any(Uint8Array), name: "ok.txt" },
+      undefined,
+    );
+    // Escape attempt on the comment tool is rejected identically.
+    await expect(
+      registeredTools(server as never)["create_issue_comment_attachment"].handler({
+        comment_id: 42,
+        file_path: "/etc/hostname",
+      }),
+    ).rejects.toThrow(/escapes the upload root/);
+  });
+
+  it("rejects a whitespace-only file_path without touching the filesystem", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: "  ",
+      }),
+    ).rejects.toThrow(/empty or whitespace/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the working directory as the upload root when GITEA_UPLOAD_ROOT is unset", async () => {
+    delete process.env.GITEA_UPLOAD_ROOT;
+    // /etc/hostname is outside the process working directory too.
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: "/etc/hostname",
+      }),
+    ).rejects.toThrow(/escapes the upload root/);
+  });
+
+  it("rejects pseudo-filesystem paths by the deny-list even when inside the root", async () => {
+    if (process.platform === "win32") return; // /proc does not exist on Windows
+    process.env.GITEA_UPLOAD_ROOT = "/";
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: "/proc/version",
+      }),
+    ).rejects.toThrow(/sensitive file or location/);
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic error when GITEA_UPLOAD_ROOT itself does not resolve", async () => {
+    process.env.GITEA_UPLOAD_ROOT = join(uploadRoot, "missing-root");
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    // The file argument never gets read: the unresolvable root aborts first,
+    // so an existing in-root file is enough (no temp-dir write needed).
+    await writeFile(join(uploadRoot, "probe.txt"), new Uint8Array([1]));
+    const err = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3, file_path: join(uploadRoot, "probe.txt"),
+    }).catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/GITEA_UPLOAD_ROOT does not resolve/);
+    expect((err as Error).message).not.toContain("missing-root");
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("treats the upload root itself as a directory, not an uploadable file", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3, file_path: uploadRoot,
+      }),
+    ).rejects.toThrow(); // realpath(root) === root passes containment, then stat/readFile of a directory fails generically
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
+  it("handles an unreadable file with a generic message (no EACCES oracle)", async () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return; // chmod is meaningless for root/win32
+    const locked = join(uploadRoot, "locked.txt");
+    await writeFile(locked, new Uint8Array([1]));
+    await chmod(locked, 0o000);
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    const err = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3, file_path: locked,
+    }).catch((e: Error) => e);
+    expect((err as Error).message).not.toContain("EACCES");
+    expect((err as Error).message).not.toContain(locked);
+    await chmod(locked, 0o644).catch(() => {});
   });
 });

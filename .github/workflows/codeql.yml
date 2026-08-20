@@ -34,6 +34,12 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-extended,security-and-quality
+          # AlertSuppression makes `// codeql[rule-id]` comments take effect:
+          # the default suites do not run it, so inline suppressions would be
+          # ignored (the `js/file-access-to-http` suppressions at the doRequest
+          # fetch sink are intentional and documented in docs/architecture.md
+          # §5.3 — without this pack they silently do nothing).
+          packs: codeql/javascript-queries:AlertSuppression.ql
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4

@@ -20,6 +20,13 @@ Quick recipes for common goals. Always resolve owner/repo first (explicit args,
 ## Create
 - New issue with labels → `list_labels` (to get ids) → `create_issue({ title, body,
   labels: [ids] })`. Or create then `add_issue_labels([names])`.
+- New issue with attachments → `create_issue` first, then
+  `create_issue_attachment({ index, file_path })` per file (uploads from the
+  machine running gitea-mcp; confirm with the user; the path is confined to
+  the upload root and must pass the extension allow-list and size cap).
+  Attach to a comment via `create_issue_comment_attachment({ comment_id,
+  file_path })` — same rules.
+- List / inspect an issue's attachments → `list_issue_attachments({ index })`.
 
 ## Edit (non-destructive)
 - Change title/body/assignee → `update_issue` (PATCH; only given fields change).
@@ -34,6 +41,9 @@ Quick recipes for common goals. Always resolve owner/repo first (explicit args,
 - Delete a label → `delete_label(id)` (removes from EVERY issue).
 - Delete a milestone → prefer `update_milestone({ state: "closed" })`; `delete_milestone`
   detaches its issues (they keep existing, milestone becomes null).
+- Rename an attachment → `edit_issue_attachment({ index, attachment_id, name })`.
+- Delete an attachment → `delete_issue_attachment({ index, attachment_id })`
+  (irreversible; get the id from `list_issue_attachments`).
 
 ## Topics (repo tags)
 - See current topics → `list_topics({})`.

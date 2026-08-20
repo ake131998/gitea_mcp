@@ -39,6 +39,16 @@ Use this to read results correctly and pick the right identifier.
 - `html_url` (string), `created_at`, `updated_at` (string ISO)
 - `user` (User) — comment author
 
+## Attachment (from list_issue_attachments / get_issue_attachment / create_issue_attachment / create_issue_comment_attachment)
+- `id` (number) — used by get/edit/delete_issue_attachment. NOT the issue number.
+- `name` (string) — the stored filename (editable via edit_issue_attachment)
+- `size` (number) — file size in bytes
+- `download_count` (number) — how many times it was downloaded
+- `browser_download_url` (string) — URL to download the file (the tools return
+  metadata only; they never download content)
+- `created_at` (string ISO), `uuid` (string)
+- Same shape appears as `attachments` on releases.
+
 ## Repository (embedded on issues)
 - `id` (number), `full_name` (string "owner/repo"), `name` (string),
   `owner` ({ login: string })

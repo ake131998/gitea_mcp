@@ -514,7 +514,17 @@ export interface ListActionRunsParams {
 
 // ── Releases ──
 
-export interface ReleaseAttachment {
+/**
+ * A request body: JSON-serializable data or a multipart upload form. The
+ * union keeps the multipart branch of `doRequest` a type-narrowing (`typeof`
+ * / `instanceof`) instead of an `unknown`-typed free-for-all, so static
+ * analysis (CodeQL taint tracking) sees one explicit sink per branch.
+ */
+export type RequestBody = FormData | Record<string, unknown>;
+
+// Gitea's generic Attachment model — shared by the issue, issue-comment, and
+// release asset endpoints (field-identical across all three).
+export interface Attachment {
   id: number;
   name: string;
   size: number;
@@ -522,7 +532,6 @@ export interface ReleaseAttachment {
   created_at: string;
   uuid: string;
   browser_download_url: string;
-  api_url?: string;
 }
 
 export interface Release {
@@ -539,7 +548,7 @@ export interface Release {
   url: string;
   tag_commit?: { sha: string; url: string };
   author?: User;
-  attachments?: ReleaseAttachment[];
+  attachments?: Attachment[];
 }
 
 export interface ListReleasesParams {
@@ -685,20 +694,33 @@ export class GiteaClient {
    * branch on `status` (never on the message string). The `authHeader` is
    * pre-built by the caller from the active candidate + scheme.
    *
-   * SECURITY (CodeQL `js/file-access-to-http`): the `Authorization` header
-   * below intentionally carries credentials read from local git files
-   * (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret` →
-   * `buildAuthHeader`, see `credentials.ts`). This is the designed
-   * authentication pipeline (docs/architecture.md §5.3), NOT information
-   * exfiltration: the secret is sent verbatim because that is its purpose,
-   * and AGENTS.md §4 forbids logging or echoing it anywhere else. The sink is
-   * suppressed path-scoped below — the rule stays globally enabled as a
-   * guardrail against real backdoor injection.
+   * SECURITY (CodeQL `js/file-access-to-http`): two designed file → HTTP
+   * data flows reach the fetch sink below. Each carries its OWN justified
+   * line-scoped suppression at the point the taint enters the request; the
+   * rule itself stays globally enabled as a guardrail against real backdoor
+   * injection, and neither suppression covers the other's flow.
+   *
+   * 1. Credential flow — the `Authorization` header (and the `init` object
+   *    carrying it) holds credentials read from local git files
+   *    (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret`
+   *    → `buildAuthHeader`, see `credentials.ts`). This is the designed
+   *    authentication pipeline (docs/architecture.md §5.3), NOT information
+   *    exfiltration: the secret is sent verbatim because that is its purpose,
+   *    and AGENTS.md §4 forbids logging or echoing it anywhere else.
+   *
+   * 2. Attachment-upload flow — multipart `FormData` bodies carry a local
+   *    file's bytes because uploading that file is the entire point of the
+   *    attachment tools. The upload source is hardened BEFORE it reaches
+   *    this method by the `readUploadFile` confinement choke point in
+   *    `server.ts` (realpath upload-root confinement, sensitive-location
+   *    deny-list, extension allow-list, size cap, path-free errors), per
+   *    issue #76: the rule stayed active until the source was hardened;
+   *    with the hardening in place the suppression is justified.
    */
   private async doRequest<T>(
     method: string,
     path: string,
-    body: unknown,
+    body: RequestBody | undefined,
     authHeader: string | null,
   ): Promise<T> {
     // Guard: every API tool enters here through request(), which already checks
@@ -710,12 +732,31 @@ export class GiteaClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
 
+    // Multipart uploads take a dedicated path: the FormData body goes straight
+    // into its own RequestInit and fetch call, so the file-derived bytes and
+    // the file-derived auth header each reach exactly one sink below (the
+    // fetch calls carry the justified path-scoped suppressions; see the
+    // doRequest doc comment for both designed flows).
+    if (body instanceof FormData) {
+      // Intentional (flow 2, attachment upload): the file bytes in `body`
+      // enter the request on the init line below — they were read through
+      // the `readUploadFile` confinement choke point in `server.ts`
+      // (upload-root realpath confinement, sensitive-location deny-list,
+      // extension allow-list, size cap) per issue #76 — uploading the
+      // confined file is the designed behavior. See the doRequest doc
+      // comment. The rule stays globally enabled.
+      const init: RequestInit = { method, headers, body }; // lgtm[js/file-access-to-http]
+      const response = await fetch(url, init);
+      return this.parseResponse<T>(response);
+    }
+
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
-      // Intentional: `init` carries the file-derived auth header built by
-      // buildAuthHeader (see the doRequest doc comment above). Path-scoped
-      // suppression for this sink; the rule stays globally enabled.
+      // Intentional (flow 1, credential): `init` carries the file-derived
+      // auth header built by buildAuthHeader (see the doRequest doc comment
+      // above). Path-scoped suppression for this sink; the rule stays
+      // globally enabled.
       // codeql[js/file-access-to-http]
       init.body = JSON.stringify(body);
     }
@@ -724,7 +765,11 @@ export class GiteaClient {
     // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
     // codeql[js/file-access-to-http]
     const response = await fetch(url, init);
+    return this.parseResponse<T>(response);
+  }
 
+  /** Shared non-2xx / 204 / JSON handling for both doRequest paths. */
+  private async parseResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
       throw new GiteaApiError(response.status, response.statusText, errorText);
@@ -758,7 +803,7 @@ export class GiteaClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown,
+    body?: RequestBody,
   ): Promise<T> {
     // Single guard point: when unconfigured, throw before any fetch. This
     // covers every API tool including search_issues / list_my_repos which
@@ -992,6 +1037,90 @@ export class GiteaClient {
   ): Promise<void> {
     const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/comments/${id}`;
     return this.request<void>("DELETE", path);
+  }
+
+  // ── Issue attachments ──
+
+  /**
+   * Upload a file as an issue attachment (multipart/form-data). The caller
+   * (server.ts handler) reads the local file; this method stays pure HTTP:
+   * it wraps the given bytes + filename into a FormData with the required
+   * `attachment` field. `name` optionally overrides the stored filename.
+   */
+  async createIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    file: { data: Uint8Array<ArrayBuffer>; name: string },
+    name?: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets`;
+    const query = new URLSearchParams();
+    if (name) query.set("name", name);
+    const form = new FormData();
+    form.append("attachment", new Blob([file.data]), file.name);
+    const qs = query.toString();
+    return this.request<Attachment>("POST", qs ? `${path}?${qs}` : path, form);
+  }
+
+  async listIssueAttachments(
+    owner: string,
+    repo: string,
+    index: number,
+  ): Promise<Attachment[]> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets`;
+    return this.request<Attachment[]>("GET", path);
+  }
+
+  async getIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<Attachment>("GET", path);
+  }
+
+  async editIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+    name: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<Attachment>("PATCH", path, { name });
+  }
+
+  async deleteIssueAttachment(
+    owner: string,
+    repo: string,
+    index: number,
+    attachmentId: number,
+  ): Promise<void> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${index}/assets/${attachmentId}`;
+    return this.request<void>("DELETE", path);
+  }
+
+  /**
+   * Upload a file as an attachment on one issue comment (multipart/form-data,
+   * same shape as createIssueAttachment but targeting the comment by id).
+   */
+  async createIssueCommentAttachment(
+    owner: string,
+    repo: string,
+    commentId: number,
+    file: { data: Uint8Array<ArrayBuffer>; name: string },
+    name?: string,
+  ): Promise<Attachment> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/comments/${commentId}/assets`;
+    const query = new URLSearchParams();
+    if (name) query.set("name", name);
+    const form = new FormData();
+    form.append("attachment", new Blob([file.data]), file.name);
+    const qs = query.toString();
+    return this.request<Attachment>("POST", qs ? `${path}?${qs}` : path, form);
   }
 
   async listLabels(
