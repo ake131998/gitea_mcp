@@ -521,4 +521,34 @@ describe("discoverCredentialsForHost", () => {
     const opts = vi.mocked(execFile).mock.calls[0][2] as { env: Record<string, string> };
     expect(opts.env.GIT_TERMINAL_PROMPT).toBe("0");
   });
+
+  it("rejects a repoPath containing a newline (stdin attribute-line injection)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "victim", password: "stolen" } });
+    // A forged `host=` line must never reach the credential description —
+    // otherwise fill would return the credential stored for that host.
+    await expect(
+      discoverCredentialsForHost({
+        baseUrl: "https://attacker.example",
+        cwd: "/repo",
+        env: {},
+        repoPath: "x\nhost=github.com\n",
+      }),
+    ).rejects.toThrow("line breaks are not allowed");
+    expect(execCalls.filter((c) => c.args[0] === "credential")).toHaveLength(0);
+  });
+
+  it("rejects a username containing a newline (stdin attribute-line injection)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "victim", password: "stolen" } });
+    await expect(
+      discoverCredentialsForHost({
+        baseUrl: "https://attacker.example",
+        cwd: "/repo",
+        env: {},
+        username: "x\r\nhost=github.com",
+      }),
+    ).rejects.toThrow("line breaks are not allowed");
+    expect(execCalls.filter((c) => c.args[0] === "credential")).toHaveLength(0);
+  });
 });

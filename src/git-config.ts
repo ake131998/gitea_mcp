@@ -175,6 +175,23 @@ interface FillResult {
 }
 
 /**
+ * Validate one credential-description attribute value: git's stdin format is
+ * line-oriented (`key=value\n`), so a value containing a newline/CR/NUL would
+ * inject ADDITIONAL attribute lines — e.g. a `repoPath` of `x\nhost=evil\n`
+ * would override the host and make `git credential fill` return the
+ * credential stored for `evil` (an untrusted MCP client controls `owner`/
+ * `repo`/`username` via configure_gitea; see server.ts's trust-boundary
+ * notes). Reject such values outright — never silently strip.
+ */
+function assertCredentialAttribute(kind: string, value: string): void {
+  if (/[\r\n\0]/.test(value)) {
+    throw new Error(
+      `Invalid ${kind} for git credential lookup: line breaks are not allowed.`,
+    );
+  }
+}
+
+/**
  * Ask git for the credential it would use for a host via
  * `git credential fill`: feed the credential description (key=value lines
  * terminated by a blank line) on stdin, read `username=` / `password=` from
@@ -183,6 +200,13 @@ interface FillResult {
  * like wincred / osxkeychain / libsecret), making git the single canonical
  * parser of credential storage; the secret enters this process via
  * subprocess stdout, not a `node:fs` file read.
+ *
+ * SECURITY: every attribute value is validated by `assertCredentialAttribute`
+ * first — the description is line-oriented, and an embedded newline in
+ * `path`/`username` (both ultimately MCP-client-controlled) could inject a
+ * forged `host=` line and redirect the lookup to an arbitrary host's stored
+ * credential. `protocol`/`host` come from `new URL(baseUrl)` and cannot carry
+ * newlines, but are validated too (defense in depth).
  *
  * Semantics (git answers, we do not enumerate):
  * - With `username` fed on stdin, helpers are asked for that exact identity;
@@ -199,6 +223,10 @@ async function gitCredentialFill(input: {
   path?: string;
   username?: string;
 }, cwd: string, env: NodeJS.ProcessEnv): Promise<FillResult> {
+  assertCredentialAttribute("protocol", input.protocol);
+  assertCredentialAttribute("host", input.host);
+  if (input.path !== undefined) assertCredentialAttribute("path", input.path);
+  if (input.username !== undefined) assertCredentialAttribute("username", input.username);
   const description = [
     `protocol=${input.protocol}`,
     `host=${input.host}`,
