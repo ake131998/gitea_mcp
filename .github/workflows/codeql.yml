@@ -45,6 +45,21 @@ jobs:
         uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
+        id: analyze
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+          output: sarif-results
+
+      # Dismiss alerts whose SARIF entry carries `suppressions[]` (i.e. the
+      # inline `// lgtm`/`// codeql` comments matched via AlertSuppression).
+      # Dismissal is a default-branch-only operation (alert state is global);
+      # on PR branches this step is a no-op that just passes the ids through.
+      - name: Dismiss suppressed alerts
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        uses: advanced-security/dismiss-alerts@v2
+        with:
+          sarif-id: ${{ steps.analyze.outputs.sarif-id }}
+          sarif-file: sarif-results/${{ matrix.language }}.sarif
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
