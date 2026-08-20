@@ -23,7 +23,7 @@
 
 - **完整的 Gitea 项目管理** —— 通过自然语言管理议题、标签、里程碑、评论与主题
 - **零配置自动发现** —— 从项目 git 配置读取 `baseUrl`、`owner`、`repo` 与令牌；一次全局安装即可服务多个仓库
-- **多来源认证 + 自动容错** —— 依次尝试 `[gitea]` 配置令牌、`GITEA_TOKEN`、git 凭据存储，遇 `401`/`403` 自动切换
+- **多来源认证 + 自动容错** —— 依次尝试 `[gitea]` 配置令牌、`GITEA_TOKEN`、git 自身的凭据机制（`git credential fill`，支持存储文件与 OS 钥匙串），遇 `401`/`403` 自动切换
 - **按动作划分的技能** —— 每个工作流一个技能（查找、创建、打标签、评论、规划里程碑……），适配 opencode、Claude Code、Cursor 等
 - **客户端无关** —— 兼容任何基于 stdio 的 MCP 客户端；同时内置引导提示与按需参考资源
 
@@ -44,7 +44,7 @@
 
 - **Node.js ≥ 24** —— 使用全局 `fetch`
 - 一个可通过 HTTP 访问的 **Gitea 实例**（自托管或 Gitea Cloud）
-- 一个 **Gitea API 令牌**（或 git 凭据存储条目），用于读取公开仓库以外的操作
+- 一个 **Gitea API 令牌**（或一条 git 凭据），用于读取公开仓库以外的操作
 
 ## 安装
 
@@ -87,7 +87,7 @@ node dist/cli.js
 | 变量 | 必填 | 说明 |
 |------|:----:|------|
 | `GITEA_BASE_URL` | 否 | Gitea 实例地址（如 `https://gitea.example.com`）。未设置时从项目 git 远程地址自动推导。 |
-| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `.git/config [gitea]` 令牌之后、git 凭据存储之前（见[令牌发现](#令牌发现)）。 |
+| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `.git/config [gitea]` 令牌之后、git 凭据机制之前（见[令牌发现](#令牌发现)）。 |
 | `GITEA_DEFAULT_OWNER` | 否 | 默认仓库所有者，免去每次传入 `owner` 参数 |
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
 | `GITEA_UPLOAD_ROOT` | 否 | 附件上传（`create_issue_attachment` / `create_issue_comment_attachment`）允许读取的根目录。默认为服务器工作目录；解析后的路径必须位于该根目录内。 |
@@ -112,19 +112,21 @@ node dist/cli.js
 
 `gitea-mcp` 从三个来源收集认证**候选**，按以下优先级排序：
 
-1. `.git/config` 中的 `[gitea "<baseUrl>"]` 段（不带地址的 `[gitea]` 段作为全局兜底）：
+1. `.git/config` 中的 `[gitea "<baseUrl>"]` 段（不带地址的 `[gitea]` 段作为全局兜底），通过
+   `git config get --url=<baseUrl> gitea.token` 读取：
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    始终以 `Authorization: token <token>` 发送。
-2. `GITEA_TOKEN` 环境变量 —— 同样以 `Authorization: token` 发送。
-3. git 凭据存储（`~/.git-credentials`，或 `$XDG_CONFIG_HOME/git/credentials`）—— host 匹配实例
-   的每一行，如 `https://alice:s3cret@gitea.example.com`。多行同时匹配时，path 与 `owner/repo`
-   最贴近的那一行优先尝试。
+2. `GITEA_TOKEN` 环境变量 —— 同样以 `Authorization: token` 发送。运行时无法使用 `git` 时，
+   这是唯一剩余的令牌来源。
+3. git 自身会为实例 host 使用的凭据，通过 `git credential fill` 获取（配置链 + 凭据 helper——
+   存储文件、OS 钥匙串或你配置的任何 helper）。同一 host 存在多个身份时由 git 选取；
+   `configure_gitea` 的 `username` 可将查找收窄到该身份。
 
-凭据存储条目的 `password` 字段可能是真正的 PAT、账户登录密码，或 OAuth token —— git 存的是
-用户在密码提示里输入的任何内容，服务端无法静态区分。因此每个凭据存储条目会以**两种认证方案**
+git 凭据的 `password` 字段可能是真正的 PAT、账户登录密码，或 OAuth token —— git 存的是
+用户在密码提示里输入的任何内容，服务端无法静态区分。因此凭据会以**两种认证方案**
 依次尝试：
 
 - `Authorization: Basic <base64(user:pass)>` —— 账户密码和 PAT 都能通过（Gitea 会校验用户名与

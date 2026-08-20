@@ -27,16 +27,20 @@ repo / with env vars set.
 
 ## Token discovery chain (tried in order)
 
-1. `.git/config` — a `[gitea "<baseUrl>"]` section, e.g.
+1. `.git/config` — a `[gitea "<baseUrl>"]` section (read via
+   `git config get --url=<baseUrl> gitea.token`), e.g.
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    A bare `[gitea]` section with `token = ...` is a host-wide fallback.
-2. The git credential store (`~/.git-credentials`, or `$XDG_CONFIG_HOME/git/credentials`)
-   — a line whose host matches the instance, e.g.
-   `https://oauth2:<token>@gitea.example.com`.
-3. `GITEA_TOKEN` env var.
+2. `GITEA_TOKEN` env var.
+3. The credential git itself would use for the instance host, retrieved via
+   `git credential fill` — this honors every configured credential helper,
+   including OS keychains (`wincred` / `osxkeychain` / `libsecret`) and the
+   store file (`~/.git-credentials`). If `gitea_status` reports
+   `gitAvailable: false`, git could not be used at all — only `GITEA_TOKEN`
+   remains; guide the user to install git (≥ 2.46) or set `GITEA_TOKEN`.
 4. If none of the above yield a token, the server starts WITHOUT a token (anonymous). Public
    repos may be read; writes and private repos return 401 — that is the signal to help the
    user add a token via one of the sources above.
@@ -52,14 +56,15 @@ repo / with env vars set.
    explicitly choose to — prefer having them run a git command themselves.
 3. Have the user store it so discovery finds it. Recommend, in priority order:
    - `git config --file=.git/config gitea."<baseUrl>".token "<token>"` (project-scoped), or
-   - add to the credential store, or
+   - store it as a git credential (any configured helper — e.g.
+     `git credential approve`, or an OS-keychain helper), or
    - export `GITEA_TOKEN` (and `GITEA_BASE_URL`) in their MCP client config.
    `<baseUrl>` is the EXACT value `resolve_repo` reported (scheme + host, with port if any).
 4. After the user stores the credential, call `configure_gitea` with the same `base_url`
    to trigger credential re-discovery — no restart needed. If the server started
    unconfigured, provide `base_url` (and optionally `username` for identity selection)
    in the same call. Re-calling with the same `base_url` is the "I just added a
-   credential-store entry, refresh now" idiom.
+   git credential, refresh now" idiom.
 
 ## Never log the token
 

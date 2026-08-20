@@ -352,6 +352,24 @@ describe("tool handlers", () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed).toMatchObject({ configured: true, baseUrl: "https://g", totalCandidates: 1 });
     expect(parsed).toMatchObject({ owner: "owner", repo: "repo" });
+    // gitAvailable stays absent when unknown (e.g. server started before the
+    // issue #79 discovery rework surfaced it) — no misleading guidance.
+    expect(parsed).not.toHaveProperty("gitAvailable");
+  });
+
+  it("gitea_status surfaces gitAvailable=false with env-only fallback guidance", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: true,
+      baseUrl: "https://g",
+      candidates: [],
+      activeIndex: null,
+      totalCandidates: 0,
+    });
+    const server = await createServer("https://g", undefined, "o", "r", undefined, false);
+    const result = await registeredTools(server as never)["gitea_status"].handler({});
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toMatchObject({ gitAvailable: false });
   });
 
   it("list_topics returns JSON of the client result", async () => {
@@ -911,9 +929,12 @@ describe("configure_gitea tool", () => {
   });
 
   it("triggers credential re-discovery when base_url is provided", async () => {
-    const discover = vi.fn().mockResolvedValue([
-      { source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
-    ]);
+    const discover = vi.fn().mockResolvedValue({
+      candidates: [
+        { source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
+      ],
+      gitAvailable: true,
+    });
     const { createServer } = await import("../server.js");
     const server = await createServer(undefined, undefined, undefined, undefined, { discoverCredentials: discover });
     mockClient.getBaseUrl.mockReturnValue(null);
@@ -933,7 +954,7 @@ describe("configure_gitea tool", () => {
   });
 
   it("triggers re-discovery when username is provided (refresh idiom)", async () => {
-    const discover = vi.fn().mockResolvedValue([]);
+    const discover = vi.fn().mockResolvedValue({ candidates: [], gitAvailable: true });
     const { createServer } = await import("../server.js");
     const server = await createServer("https://g.example", undefined, "o", "r", { discoverCredentials: discover });
     mockClient.getBaseUrl.mockReturnValue("https://g.example");

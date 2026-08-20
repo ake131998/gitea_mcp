@@ -694,28 +694,21 @@ export class GiteaClient {
    * branch on `status` (never on the message string). The `authHeader` is
    * pre-built by the caller from the active candidate + scheme.
    *
-   * SECURITY (CodeQL `js/file-access-to-http`): two designed file → HTTP
-   * data flows reach the fetch sink below. Each carries its OWN justified
-   * line-scoped suppression at the point the taint enters the request; the
-   * rule itself stays globally enabled as a guardrail against real backdoor
-   * injection, and neither suppression covers the other's flow.
+   * SECURITY (CodeQL `js/file-access-to-http`): one designed file → HTTP
+   * data flow reaches the fetch sink below — the attachment-upload flow.
+   * Its bytes were read through the `readUploadFile` confinement choke point
+   * in `server.ts` (realpath upload-root confinement, sensitive-location
+   * deny-list, extension allow-list, size cap, path-free errors), per issue
+   * #76; uploading that file is the entire point of the attachment tools.
+   * The flow carries a justified line-scoped suppression where the taint
+   * enters the request, and the rule stays globally enabled as a guardrail
+   * against real backdoor injection.
    *
-   * 1. Credential flow — the `Authorization` header (and the `init` object
-   *    carrying it) holds credentials read from local git files
-   *    (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret`
-   *    → `buildAuthHeader`, see `credentials.ts`). This is the designed
-   *    authentication pipeline (docs/architecture.md §5.3), NOT information
-   *    exfiltration: the secret is sent verbatim because that is its purpose,
-   *    and AGENTS.md §4 forbids logging or echoing it anywhere else.
-   *
-   * 2. Attachment-upload flow — multipart `FormData` bodies carry a local
-   *    file's bytes because uploading that file is the entire point of the
-   *    attachment tools. The upload source is hardened BEFORE it reaches
-   *    this method by the `readUploadFile` confinement choke point in
-   *    `server.ts` (realpath upload-root confinement, sensitive-location
-   *    deny-list, extension allow-list, size cap, path-free errors), per
-   *    issue #76: the rule stayed active until the source was hardened;
-   *    with the hardening in place the suppression is justified.
+   * The former credential flow (alert #8) no longer exists as a file-read
+   * flow: since issue #79, credential retrieval goes through git's own
+   * machinery (`git config get --url=...` / `git credential fill` in
+   * `git-config.ts`), so the secret enters this process via subprocess
+   * stdout, which the query's `FileSystemReadAccess` source does not match.
    */
   private async doRequest<T>(
     method: string,
@@ -733,14 +726,13 @@ export class GiteaClient {
     if (authHeader) headers["Authorization"] = authHeader;
 
     // Multipart uploads take a dedicated path: the FormData body goes straight
-    // into its own RequestInit and fetch call, so the file-derived bytes and
-    // the file-derived auth header each reach exactly one sink below (the
-    // fetch calls carry the justified path-scoped suppressions; see the
-    // doRequest doc comment for both designed flows).
+    // into its own RequestInit and fetch call, so the file-derived bytes enter
+    // exactly one sink below (see the doRequest doc comment for the designed
+    // attachment-upload flow and its #76 confinement).
     if (body instanceof FormData) {
-      // Intentional (flow 2, attachment upload): the file bytes in `body`
-      // enter the request on the init line below — they were read through
-      // the `readUploadFile` confinement choke point in `server.ts`
+      // Intentional (attachment upload): the file bytes in `body` enter the
+      // request on the init line below — they were read through the
+      // `readUploadFile` confinement choke point in `server.ts`
       // (upload-root realpath confinement, sensitive-location deny-list,
       // extension allow-list, size cap) per issue #76 — uploading the
       // confined file is the designed behavior. See the doRequest doc
@@ -753,17 +745,9 @@ export class GiteaClient {
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
-      // Intentional (flow 1, credential): `init` carries the file-derived
-      // auth header built by buildAuthHeader (see the doRequest doc comment
-      // above). Path-scoped suppression for this sink; the rule stays
-      // globally enabled.
-      // codeql[js/file-access-to-http]
       init.body = JSON.stringify(body);
     }
 
-    // Intentional credential authentication (docs/architecture.md §5.3,
-    // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
-    // codeql[js/file-access-to-http]
     const response = await fetch(url, init);
     return this.parseResponse<T>(response);
   }

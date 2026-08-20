@@ -46,11 +46,15 @@ if (head === "init") {
     process.exit(1);
   });
 } else {
-  // Resolve baseUrl/owner/repo/credentials from env first, then the local git
-  // context (`.git/config` remotes + credential store). Discovery collects ALL
-  // credential candidates (config token, env token, credential-store entries)
-  // rather than picking one, so the client can fall back across them when one
-  // scheme is rejected (e.g. an account password that is not a PAT). When
+  // Resolve baseUrl/owner/repo/credentials from env first, then git's own
+  // machinery (`.git/config` remotes via file reads; tokens/credentials via
+  // `git config` / `git credential fill` subprocesses — never in-process
+  // parsing of secret-bearing files). Discovery collects ALL credential
+  // candidates (config token, env token, git credential helper) rather than
+  // picking one, so the client can fall back across them when one scheme is
+  // rejected (e.g. an account password that is not a PAT). When the git
+  // binary is unavailable, discovery degrades to env-token / anonymous mode
+  // and `gitea_status` reports gitAvailable=false as fix guidance. When
   // neither env nor any git remote provides a baseUrl, the server starts in
   // an UNCONFIGURED state — business tools return NotConfiguredError on
   // invocation, and the configure_gitea tool enables runtime configuration.
@@ -73,6 +77,8 @@ if (head === "init") {
       discovered.candidates,
       discovered.defaultOwner,
       discovered.defaultRepo,
+      undefined,
+      discovered.gitAvailable,
     ).catch((err: unknown) => {
       console.error("Fatal error:", err);
       process.exit(1);

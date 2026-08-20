@@ -1,0 +1,75 @@
+name: CodeQL file-access-to-http guard
+
+# Guardrail for the two documented file → HTTP flows (issues #78 / #79):
+# the credential flow was removed at the source (issue #79 — credential
+# retrieval now goes through `git credential fill` / `git config get`,
+# subprocess stdout instead of `node:fs` reads, so alert #8 no longer
+# fires), and the attachment-upload flow is confined by the #76
+# `readUploadFile` choke point with its alert dismissed ONCE on GitHub with
+# a recorded reason (issue #79 Track 2).
+#
+# Dismissal is bound to the alert's identity (rule + code context), so the
+# same code will not re-generate that alert on any branch — but if the
+# multipart fetch sink is ever restructured, a NEW `js/file-access-to-http`
+# alert appears. This guard fails exactly then: any OPEN alert of this rule
+# (dismissed and fixed alerts are excluded by `state=open`) is loud instead
+# of silent. It deliberately does NOT revive the blanket auto-dismiss
+# reverted in a5de78b, and does not touch alerts of any other rule.
+
+on:
+  workflow_run:
+    workflows: [CodeQL]
+    types: [completed]
+
+permissions:
+  # security-events:read is required to read code-scanning alerts.
+  security-events: read
+
+jobs:
+  guard:
+    name: Fail on new open file-access-to-http alerts
+    runs-on: ubuntu-latest
+    # Only the default branch's completed CodeQL runs carry the canonical
+    # alert state; fork PR analyses do not upload to the base repo.
+    if: github.event.workflow_run.head_branch == 'master' && github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Fail when an open js/file-access-to-http alert exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # List OPEN alerts of the rule (dismissed/fixed excluded by state).
+          # Pagination is followed; the repo has few alerts, so one page is
+          # the norm and the loop is just future-proofing.
+          page=1
+          hits=""
+          while :; do
+            response=$(gh api --paginate=false \
+              "repos/${REPO}/code-scanning/alerts?state=open&rule=js%2Ffile-access-to-http&per_page=100&page=${page}" \
+              --method GET -H "Accept: application/vnd.github+json")
+            count=$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).length))' "$response")
+            if [ "$count" = "0" ]; then
+              break
+            fi
+            batch=$(node -e '
+              const alerts = JSON.parse(process.argv[1]);
+              for (const a of alerts) {
+                const loc = a.most_recent_instance?.location;
+                console.log(`#${a.number} ${a.rule.id} ${loc ? `${loc.path}:${loc.start_line}` : "(no location)"}`);
+              }
+            ' "$response")
+            hits="${hits}${batch}\n"
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+            page=$((page + 1))
+          done
+          if [ -n "$(echo "$hits" | tr -d "[:space:]")" ]; then
+            echo "::error::New js/file-access-to-http alert(s) found (open, not dismissed):"
+            echo "$hits"
+            echo "The two designed flows are documented in docs/architecture.md §5.3; the attachment alert is dismissed once (#79). A NEW open alert means a new file → HTTP flow appeared — fix it at the source or confine it, then dismiss with a recorded reason."
+            exit 1
+          fi
+          echo "No open js/file-access-to-http alerts — guard passed."

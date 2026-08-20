@@ -58,6 +58,7 @@ describe("cli entry point", () => {
       defaultOwner: "owner",
       defaultRepo: "repo",
       remote: "origin",
+      gitAvailable: true,
     });
     vi.mocked(runServer).mockResolvedValue(undefined);
     await import("../cli.js");
@@ -67,9 +68,27 @@ describe("cli entry point", () => {
         [{ source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 }],
         "owner",
         "repo",
+        undefined,
+        true,
       );
     });
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("forwards gitAvailable=false so gitea_status can surface the fallback guidance", async () => {
+    vi.mocked(discoverConfig).mockResolvedValue({
+      baseUrl: "https://gitea.example",
+      candidates: [],
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      remote: "origin",
+      gitAvailable: false,
+    });
+    vi.mocked(runServer).mockResolvedValue(undefined);
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, false);
+    });
   });
 
   it("starts the server with empty candidates when discovery yields none", async () => {
@@ -83,7 +102,7 @@ describe("cli entry point", () => {
     vi.mocked(runServer).mockResolvedValue(undefined);
     await import("../cli.js");
     await vi.waitFor(() => {
-      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo");
+      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, undefined);
     });
   });
 

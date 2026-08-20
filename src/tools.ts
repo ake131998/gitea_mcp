@@ -372,7 +372,7 @@ export const ConfigureGiteaSchema = z.object({
     .url()
     .optional()
     .describe(
-      "Gitea instance base URL (e.g. https://gitea.example.com). Providing base_url — even unchanged — triggers credential re-discovery for that host. Use this as the 'I just added a credential-store entry, refresh now' idiom.",
+      "Gitea instance base URL (e.g. https://gitea.example.com). Providing base_url — even unchanged — triggers credential re-discovery for that host. Use this as the 'I just added a git credential, refresh now' idiom.",
     ),
   owner: z
     .string()
@@ -386,7 +386,7 @@ export const ConfigureGiteaSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Selects which identity to use from the git credential store. Host-matching entries are strictly filtered by this username — no fallback to other identities. Providing username triggers credential re-discovery.",
+      "Selects which identity git's credential machinery should use for the host. The lookup is narrowed to this username — no fallback to other identities. Providing username triggers credential re-discovery.",
     ),
 });
 

@@ -74,6 +74,12 @@ export interface CredentialDiscoveryResult {
   remote?: string;
   /** Candidates in priority order (highest priority first). */
   candidates: CandidateCredential[];
+  /**
+   * false when the git binary could not be used for credential discovery
+   * (missing / spawn failure / timeout) — only `GITEA_TOKEN` (or anonymous
+   * mode) remains. Surfaced by `gitea_status` as the fix guidance.
+   */
+  gitAvailable?: boolean;
 }
 
 /** A picked next attempt — the candidate index plus the scheme to apply. */

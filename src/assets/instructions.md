@@ -8,8 +8,9 @@ as text. Follow these rules to use them correctly.
 
 On start the server reads `<cwd>/.git/config` and derives `baseUrl`, `owner`, `repo`,
 and `token` so one global install can serve many projects. The `GITEA_BASE_URL` /
-`GITEA_TOKEN` / `GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` env vars are OPTIONAL
-overrides; when set they take precedence over git discovery. The remote is chosen
+`GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` env vars are OPTIONAL overrides that win
+over git discovery; `GITEA_TOKEN` is one auth candidate, tried after a
+`.git/config [gitea]` token and before git's credential machinery (`git credential fill`). The remote is chosen
 `upstream` first, then `origin`. If the cwd has no git remote and `GITEA_BASE_URL` is
 unset, the server starts in an **unconfigured** state — tools/list is available but
 business tools return a `NotConfiguredError`. Use the **configure_gitea** tool to set
