@@ -739,14 +739,13 @@ export class GiteaClient {
     // doRequest doc comment for both designed flows).
     if (body instanceof FormData) {
       // Intentional (flow 2, attachment upload): the file bytes in `body`
-      // enter the request below — they were read through the `readUploadFile`
-      // confinement choke point in `server.ts` (upload-root realpath
-      // confinement, sensitive-location deny-list, extension allow-list,
-      // size cap) per issue #76 — uploading the confined file is the
-      // designed behavior. See the doRequest doc comment. The rule stays
-      // globally enabled.
-      // codeql[js/file-access-to-http]
-      const init: RequestInit = { method, headers, body };
+      // enter the request on the init line below — they were read through
+      // the `readUploadFile` confinement choke point in `server.ts`
+      // (upload-root realpath confinement, sensitive-location deny-list,
+      // extension allow-list, size cap) per issue #76 — uploading the
+      // confined file is the designed behavior. See the doRequest doc
+      // comment. The rule stays globally enabled.
+      const init: RequestInit = { method, headers, body }; // lgtm[js/file-access-to-http]
       const response = await fetch(url, init);
       return this.parseResponse<T>(response);
     }
