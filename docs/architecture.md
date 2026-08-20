@@ -249,19 +249,22 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   output (see AGENTS.md §4 Secret Handling). The `gitea_status` diagnostic tool
   surfaces a redacted view via `getCredentialStatus()` → `summarizeCandidates()`
   (`secretPresent: boolean`, masked username `firstChar***`).
-- **CodeQL `js/file-access-to-http` mitigation:** the only suppressed flow is
-  the designed credential flow — the `Authorization` header carries
-  file-derived credentials (the point of the discovery + state-machine
-  pipeline), documented inline at the `doRequest` sink and carrying the
-  path-scoped `codeql[js/file-access-to-http]` suppression with justification.
-  The rule stays globally enabled. The attachment-upload flow (multipart
-  `FormData` bodies) is deliberately NOT covered by that suppression: its
-  `file_path` → bytes → request-body path keeps the rule active, and the
-  upload source is hardened before it reaches the client (`readUploadFile` in
-  `server.ts` — realpath confinement to an upload root, sensitive-location
-  deny-list, extension allow-list, size cap, and path-free generic errors), so
-  any alert on the upload data flow is reviewed against that hardening rather
-  than blanket-suppressed.
+- **CodeQL `js/file-access-to-http` mitigation:** two designed file → HTTP
+  data flows reach the `doRequest` fetch sink, and each carries its OWN
+  justified line-scoped suppression where the taint enters the request —
+  neither suppression covers the other's flow, and the rule stays globally
+  enabled: (1) the credential flow — the `Authorization` header (and the
+  `init` object carrying it) holds file-derived credentials, the point of the
+  discovery + state-machine pipeline; (2) the attachment-upload flow —
+  multipart `FormData` bodies carry a local file's bytes, and the upload
+  source was hardened FIRST per issue #76: `readUploadFile` in `server.ts`
+  confines it (realpath upload-root confinement, sensitive-location
+  deny-list, extension allow-list, size cap, path-free generic errors)
+  before the bytes ever reach the client. The rule stayed active while the
+  source was unconfined (PR #75's blanket extension of the credential
+  suppression to this flow was the reported defect); with the hardening in
+  place the per-line suppression is justified and documented at the sink
+  (see the `doRequest` doc comment in `gitea-client.ts`).
 
 `GiteaApiError extends Error` with typed `{status, statusText, body}` fields so
 callers can branch on `err.status === 401` without substring-matching the

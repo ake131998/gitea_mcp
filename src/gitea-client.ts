@@ -686,22 +686,28 @@ export class GiteaClient {
    * branch on `status` (never on the message string). The `authHeader` is
    * pre-built by the caller from the active candidate + scheme.
    *
-   * SECURITY (CodeQL `js/file-access-to-http`): the `Authorization` header
-   * below intentionally carries credentials read from local git files
-   * (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret` →
-   * `buildAuthHeader`, see `credentials.ts`). This is the designed
-   * authentication pipeline (docs/architecture.md §5.3), NOT information
-   * exfiltration: the secret is sent verbatim because that is its purpose,
-   * and AGENTS.md §4 forbids logging or echoing it anywhere else. The sink is
-   * suppressed path-scoped below — the rule stays globally enabled as a
-   * guardrail against real backdoor injection.
+   * SECURITY (CodeQL `js/file-access-to-http`): two designed file → HTTP
+   * data flows reach the fetch sink below. Each carries its OWN justified
+   * line-scoped suppression at the point the taint enters the request; the
+   * rule itself stays globally enabled as a guardrail against real backdoor
+   * injection, and neither suppression covers the other's flow.
    *
-   * The attachment-upload flow (multipart `FormData` bodies) is deliberately
-   * NOT covered by this suppression: its file → HTTP path must keep the rule
-   * active. The upload source is confined before it reaches this method
-   * (`readUploadFile` in `server.ts`: realpath upload-root confinement,
-   * sensitive-location deny-list, extension allow-list, size cap), and the
-   * CodeQL alert on the upload data flow is reviewed against that hardening.
+   * 1. Credential flow — the `Authorization` header (and the `init` object
+   *    carrying it) holds credentials read from local git files
+   *    (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret`
+   *    → `buildAuthHeader`, see `credentials.ts`). This is the designed
+   *    authentication pipeline (docs/architecture.md §5.3), NOT information
+   *    exfiltration: the secret is sent verbatim because that is its purpose,
+   *    and AGENTS.md §4 forbids logging or echoing it anywhere else.
+   *
+   * 2. Attachment-upload flow — multipart `FormData` bodies carry a local
+   *    file's bytes because uploading that file is the entire point of the
+   *    attachment tools. The upload source is hardened BEFORE it reaches
+   *    this method by the `readUploadFile` confinement choke point in
+   *    `server.ts` (realpath upload-root confinement, sensitive-location
+   *    deny-list, extension allow-list, size cap, path-free errors), per
+   *    issue #76: the rule stayed active until the source was hardened;
+   *    with the hardening in place the suppression is justified.
    */
   private async doRequest<T>(
     method: string,
@@ -718,20 +724,31 @@ export class GiteaClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
 
+    // Intentional (flow 1, credential): `init` carries the file-derived auth
+    // header built by buildAuthHeader — designed authentication pipeline
+    // (docs/architecture.md §5.3), not exfiltration. See the doRequest doc
+    // comment. The rule stays globally enabled.
+    // codeql[js/file-access-to-http]
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       if (body instanceof FormData) {
         // Multipart upload (issue/comment attachments): let fetch derive the
         // Content-Type with its own boundary — a manually set Content-Type
-        // would omit the boundary parameter and break the request. The
-        // js/file-access-to-http suppression does NOT apply here (see the
-        // doRequest doc comment).
+        // would omit the boundary parameter and break the request.
+        // Intentional (flow 2, attachment upload): the file bytes in this
+        // FormData were read through the `readUploadFile` confinement choke
+        // point in `server.ts` (upload-root realpath confinement, sensitive-
+        // location deny-list, extension allow-list, size cap) per issue #76 —
+        // uploading the confined file is the designed behavior. See the
+        // doRequest doc comment. The rule stays globally enabled.
+        // codeql[js/file-access-to-http]
         init.body = body;
       } else {
         headers["Content-Type"] = "application/json";
-        // Intentional: `init` carries the file-derived auth header built by
-        // buildAuthHeader (see the doRequest doc comment above). Path-scoped
-        // suppression for this sink; the rule stays globally enabled.
+        // Intentional (flow 1, credential): `init` carries the file-derived
+        // auth header built by buildAuthHeader (see the doRequest doc comment
+        // above). Path-scoped suppression for this sink; the rule stays
+        // globally enabled.
         // codeql[js/file-access-to-http]
         init.body = JSON.stringify(body);
       }
