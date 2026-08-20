@@ -728,8 +728,7 @@ export class GiteaClient {
     // header built by buildAuthHeader — designed authentication pipeline
     // (docs/architecture.md §5.3), not exfiltration. See the doRequest doc
     // comment. The rule stays globally enabled.
-    // codeql[js/file-access-to-http]
-    const init: RequestInit = { method, headers };
+    const init: RequestInit = { method, headers }; // codeql[js/file-access-to-http]
     if (body !== undefined) {
       if (body instanceof FormData) {
         // Multipart upload (issue/comment attachments): let fetch derive the
@@ -741,23 +740,20 @@ export class GiteaClient {
         // location deny-list, extension allow-list, size cap) per issue #76 —
         // uploading the confined file is the designed behavior. See the
         // doRequest doc comment. The rule stays globally enabled.
-        // codeql[js/file-access-to-http]
-        init.body = body;
+        init.body = body; // codeql[js/file-access-to-http]
       } else {
         headers["Content-Type"] = "application/json";
         // Intentional (flow 1, credential): `init` carries the file-derived
         // auth header built by buildAuthHeader (see the doRequest doc comment
         // above). Path-scoped suppression for this sink; the rule stays
         // globally enabled.
-        // codeql[js/file-access-to-http]
-        init.body = JSON.stringify(body);
+        init.body = JSON.stringify(body); // codeql[js/file-access-to-http]
       }
     }
 
     // Intentional credential authentication (docs/architecture.md §5.3,
     // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
-    // codeql[js/file-access-to-http]
-    const response = await fetch(url, init);
+    const response = await fetch(url, init); // codeql[js/file-access-to-http]
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
