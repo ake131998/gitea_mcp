@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 
 vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
@@ -23,21 +24,19 @@ import {
 type ExecCall = { args: string[]; stdin?: string };
 
 let execCalls: ExecCall[] = [];
-let execBehavior: (call: ExecCall) => { code: number | "spawn-error" | "timeout"; stdout?: string };
 
-function fakeChildFor(result: { code: number | "spawn-error" | "timeout"; stdout?: string }): ChildProcess {
+function fakeChildFor(): ChildProcess {
   // A minimal stand-in ChildProcess: only stdin is exercised (written then ended).
   const listeners: Record<string, () => void> = {};
   return {
     stdin: {
       on: (_event: string, cb: () => void) => { listeners.error = cb; },
-      end: (_data?: string) => { /* recorded via execBehavior; no real pipe */ },
+      end: (_data?: string) => { /* recorded by the end override below; no real pipe */ },
     },
   } as unknown as ChildProcess;
 }
 
 function mockExec(behavior: (call: ExecCall) => { code: number | "spawn-error" | "timeout"; stdout?: string }): void {
-  execBehavior = behavior;
   vi.mocked(execFile).mockImplementation(((
     _cmd: string,
     args: string[],
@@ -45,12 +44,10 @@ function mockExec(behavior: (call: ExecCall) => { code: number | "spawn-error" |
     callback: (err: (Error & { code?: number | string; killed?: boolean }) | null, stdout: string) => void,
   ) => {
     const call: ExecCall = { args: args as string[] };
-    // Capture stdin when the caller writes it (credential fill).
-    (call as ExecCall & { pending?: boolean });
     execCalls.push(call);
     const stdinWriter = (data?: string) => { if (data !== undefined) call.stdin = data; };
     const result = behavior(call);
-    const child = fakeChildFor(result);
+    const child = fakeChildFor();
     // Let the caller write stdin first, then deliver the outcome.
     queueMicrotask(() => {
       if (result.code === "spawn-error") {
@@ -73,8 +70,6 @@ function mockExec(behavior: (call: ExecCall) => { code: number | "spawn-error" |
     return child;
   }) as never);
 }
-
-import { execFile } from "node:child_process";
 
 function mockFiles(files: Record<string, string>, dirs: string[] = []): void {
   vi.mocked(readFile).mockImplementation(async (path) => {
