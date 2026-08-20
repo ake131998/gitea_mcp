@@ -732,35 +732,44 @@ export class GiteaClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
 
+    // Multipart uploads take a dedicated path: the FormData body goes straight
+    // into its own RequestInit and fetch call, so the file-derived bytes and
+    // the file-derived auth header each reach exactly one sink below (the
+    // fetch calls carry the justified path-scoped suppressions; see the
+    // doRequest doc comment for both designed flows).
+    if (body instanceof FormData) {
+      const init: RequestInit = { method, headers, body };
+      // Intentional (flow 2, attachment upload): the file bytes in `body`
+      // were read through the `readUploadFile` confinement choke point in
+      // `server.ts` (upload-root realpath confinement, sensitive-location
+      // deny-list, extension allow-list, size cap) per issue #76 — uploading
+      // the confined file is the designed behavior. See the doRequest doc
+      // comment. The rule stays globally enabled.
+      // codeql[js/file-access-to-http]
+      const response = await fetch(url, init);
+      return this.parseResponse<T>(response);
+    }
+
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
-      if (body instanceof FormData) {
-        // Multipart upload (issue/comment attachments): let fetch derive the
-        // Content-Type with its own boundary — a manually set Content-Type
-        // would omit the boundary parameter and break the request.
-        // Intentional (flow 2, attachment upload): the file bytes in this
-        // FormData were read through the `readUploadFile` confinement choke
-        // point in `server.ts` (upload-root realpath confinement, sensitive-
-        // location deny-list, extension allow-list, size cap) per issue #76 —
-        // uploading the confined file is the designed behavior. See the
-        // doRequest doc comment. The rule stays globally enabled.
-        init.body = /* codeql[js/file-access-to-http] */ body;
-      } else {
-        headers["Content-Type"] = "application/json";
-        // Intentional (flow 1, credential): `init` carries the file-derived
-        // auth header built by buildAuthHeader (see the doRequest doc comment
-        // above). Path-scoped suppression for this sink; the rule stays
-        // globally enabled.
-        // codeql[js/file-access-to-http]
-        init.body = JSON.stringify(body);
-      }
+      headers["Content-Type"] = "application/json";
+      // Intentional (flow 1, credential): `init` carries the file-derived
+      // auth header built by buildAuthHeader (see the doRequest doc comment
+      // above). Path-scoped suppression for this sink; the rule stays
+      // globally enabled.
+      // codeql[js/file-access-to-http]
+      init.body = JSON.stringify(body);
     }
 
     // Intentional credential authentication (docs/architecture.md §5.3,
     // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
     // codeql[js/file-access-to-http]
     const response = await fetch(url, init);
+    return this.parseResponse<T>(response);
+  }
 
+  /** Shared non-2xx / 204 / JSON handling for both doRequest paths. */
+  private async parseResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
       throw new GiteaApiError(response.status, response.statusText, errorText);
