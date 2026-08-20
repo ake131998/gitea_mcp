@@ -1212,9 +1212,11 @@ describe("attachment upload confinement (Issue #76)", () => {
     process.env.GITEA_UPLOAD_ROOT = join(uploadRoot, "missing-root");
     const { createServer } = await import("../server.js");
     const server = await createServer("https://g", undefined, "o", "r");
-    await writeFile(join(tmpdir(), "probe-root.txt"), new Uint8Array([1])).catch(() => {});
+    // The file argument never gets read: the unresolvable root aborts first,
+    // so an existing in-root file is enough (no temp-dir write needed).
+    await writeFile(join(uploadRoot, "probe.txt"), new Uint8Array([1]));
     const err = await registeredTools(server as never)["create_issue_attachment"].handler({
-      index: 3, file_path: join(tmpdir(), "probe-root.txt"),
+      index: 3, file_path: join(uploadRoot, "probe.txt"),
     }).catch((e: Error) => e);
     expect((err as Error).message).toMatch(/GITEA_UPLOAD_ROOT does not resolve/);
     expect((err as Error).message).not.toContain("missing-root");

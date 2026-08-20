@@ -80,7 +80,7 @@ import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsFo
 import type { DiscoverCredentialsForHostOptions } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, realpath, open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isAbsolute, relative, sep } from "node:path";
 import { createRequire } from "node:module";
@@ -104,11 +104,11 @@ const pkg = require("../package.json") as { version: string };
 //      roots that legitimately contain them.
 //   3. extension allow-list — only common attachment document/image/archive/
 //      log/text types, so executables and key material never enter memory.
-//   4. size cap — stat BEFORE readFile; large files are rejected before their
-//      bytes are materialized. (stat + readFile is not the TOCTOU documented
-//      in git-config.ts: there the CONTENT was security-relevant between the
-//      check and the read; here the check only bounds memory, and the upload
-//      itself is user-confirmed.)
+//   4. size cap — the file is opened ONCE and size + bytes are read from the
+//      same handle (stat(path) + readFile(path) would let the entry be
+//      swapped between check and use — the TOCTOU class flagged for
+//      git-config.ts:273-275); oversized files are rejected before their
+//      bytes are materialized. The upload itself remains user-confirmed.
 // Errors are generic and never echo the local path: Node embeds the full path
 // in readFile/stat error messages, which would give an untrusted client an
 // existence-oracle (ENOENT/EACCES/EISDIR) over arbitrary host paths.
@@ -213,19 +213,24 @@ async function readUploadFile(filePath: string): Promise<{ data: Uint8Array<Arra
   if (!UPLOAD_EXTENSIONS.has(ext)) {
     throw new Error(`Attachment upload rejected: extension '${ext || "(none)"}' is not in the upload allow-list (text, documents, images, archives, patches).`);
   }
-  let size: number;
-  try {
-    size = (await stat(canonical)).size;
-  } catch {
-    throw new Error("Attachment upload rejected: file not readable.");
-  }
-  if (size > MAX_UPLOAD_BYTES) {
-    throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
-  }
+  // Open the file once and read size + bytes from the SAME handle: stat(path)
+  // followed by readFile(path) would let a symlink be swapped between the two
+  // calls (the TOCTOU class CodeQL flags). The handle pins the inode, so the
+  // size check bounds exactly the bytes that are then read.
   let data: Uint8Array<ArrayBuffer>;
   try {
-    data = await readFile(canonical);
-  } catch {
+    const handle = await open(canonical, "r");
+    try {
+      const size = (await handle.stat()).size;
+      if (size > MAX_UPLOAD_BYTES) {
+        throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
+      }
+      data = await readFile(handle);
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Attachment upload rejected:")) throw err;
     throw new Error("Attachment upload rejected: file not readable.");
   }
   return { data, name: basename(canonical) };
