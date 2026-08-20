@@ -82,7 +82,7 @@ import type { CandidateCredential } from "./credentials.js";
 
 import { readFile, realpath, open } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { isAbsolute, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -166,13 +166,12 @@ async function resolveUploadRoot(): Promise<string> {
 
 /**
  * relative() that returns undefined when canonical is not under root
- * (it climbs out with a leading `..` segment, or is an unrelated absolute
- * path / a different drive on Windows).
+ * (it climbs out with a leading `..` segment — note `relative()` always
+ * returns a relative path here, since canonical === root is handled above).
  */
 function relativePath(root: string, canonical: string): string | undefined {
   if (canonical === root) return "";
   const rel = relative(root, canonical);
-  if (isAbsolute(rel)) return undefined;
   if (rel.split(sep)[0] === "..") return undefined;
   return rel;
 }
@@ -218,23 +217,23 @@ async function readUploadFile(filePath: string): Promise<{ data: Uint8Array<Arra
   // calls (the TOCTOU class CodeQL flags). The handle pins the inode, so the
   // size check bounds exactly the bytes that are then read.
   let data: Uint8Array<ArrayBuffer>;
-  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    handle = await open(canonical, "r");
-  } catch {
-    throw new Error("Attachment upload rejected: file not readable.");
-  }
-  try {
-    const size = (await handle.stat()).size;
-    if (size > MAX_UPLOAD_BYTES) {
-      throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
+    const handle = await open(canonical, "r");
+    try {
+      const size = (await handle.stat()).size;
+      if (size > MAX_UPLOAD_BYTES) {
+        throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
+      }
+      data = await readFile(handle);
+    } finally {
+      await handle.close();
     }
-    data = await readFile(handle);
   } catch (err) {
+    // The size-cap error (thrown above) is re-thrown verbatim; any other
+    // failure (EISDIR on a directory, EACCES, a read error) becomes a single
+    // generic path-free message — no errno, no local path.
     if (err instanceof Error && err.message.startsWith("Attachment upload rejected:")) throw err;
     throw new Error("Attachment upload rejected: file not readable.");
-  } finally {
-    await handle.close();
   }
   return { data, name: basename(canonical) };
 }
