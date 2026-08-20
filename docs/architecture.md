@@ -92,7 +92,7 @@ scripts/
 | `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` to resolve the Gitea instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
 | `src/credentials.ts` | Pure credential candidate state machine — types (`CandidateCredential`, `CredentialDiscoveryResult`, `AuthScheme`) and transition functions (`pickNextAttempt`, `markAttemptFailed`, `markAttemptSucceeded`, `buildAuthHeader`, `orderSchemesForCredentialStore`, `summarizeCandidates`). No I/O, no MCP, no HTTP — a pure leaf both `git-config.ts` (candidate construction) and `gitea-client.ts` (request-time iteration) depend on. |
 | `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`), resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list: `[gitea "<baseUrl>"] token` in `.git/config` → `GITEA_TOKEN` env → git credential store entries (`~/.git-credentials` / XDG), host-matched and path-narrowed. Each credential-store candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env,credentialsPaths})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?}`) or `null` when no instance can be found. Also exports `discoverCredentialsForHost({baseUrl, cwd?, env?, credentialsPaths?, username?, repoPath?})` for runtime re-discovery against an explicit host (used by the `configure_gitea` tool), with strict `username` filtering of credential-store entries. No MCP/HTTP logic; reads files but swallows only `ENOENT` (rethrows other errors). |
-| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests). |
+| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests). |
 | `src/tools.ts` | Exports one Zod schema per tool input. The set of schemas stays 1:1 with the tools registered in `server.ts` and the tool tables in `README.md`. |
 | `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, and all HTTP methods. Contains no MCP/stdio logic. |
 | `src/skills.ts` | The `gitea-mcp init --tool <name>` implementation: carries the registry of supported target tools and, for the chosen tool, copies every bundled skill (each subdirectory of `dist/assets/skills/` containing a `SKILL.md`) into that tool's skills directory, one folder per skill. No MCP/HTTP logic; no Gitea credentials required. |
@@ -126,7 +126,9 @@ server.ts
   ├─► gitea-client.ts   (GiteaClient)
   ├─► credentials.ts    (CandidateCredential type — the candidates param of createServer/runServer)
   ├─► @modelcontextprotocol/sdk  (McpServer, StdioServerTransport)
-  └─► assets/*.md       (readFile at runtime: instructions + resources)
+  └─► node:fs/promises, node:path (fixed-path `assets/*.md` loads; confined
+       upload reads via readUploadFile — realpath/stat/readFile under the
+       upload-root, deny-list, allow-list, and size-cap rules)
 gitea-client.ts
   ├─► credentials.ts    (pickNextAttempt, markAttemptFailed/Succeeded, buildAuthHeader, summarizeCandidates)
   └─► (global fetch)
@@ -247,19 +249,19 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   output (see AGENTS.md §4 Secret Handling). The `gitea_status` diagnostic tool
   surfaces a redacted view via `getCredentialStatus()` → `summarizeCandidates()`
   (`secretPresent: boolean`, masked username `firstChar***`).
-- **CodeQL `js/file-access-to-http` mitigation:** two designed file → HTTP
-  data flows terminate at the `doRequest` `fetch` sink, and the single
-  path-scoped suppression covers both by design: (1) the `Authorization`
-  header carries file-derived credentials (the point of the discovery +
-  state-machine pipeline), and (2) attachment uploads send the local file the
-  user explicitly asked to attach (`file_path` → `readFile` in the `server.ts`
-  handler → `FormData` body in the client — uploading the named file is the
-  entire purpose of the attachment tools, which require user confirmation per
-  their descriptions and `assets/instructions.md`). Both flows are documented
-  inline at the sink and carry the path-scoped
-  `codeql[js/file-access-to-http]` suppression comment with justification. The
-  rule stays globally enabled; only this sink is suppressed (see the
-  `doRequest` doc comment in `gitea-client.ts`).
+- **CodeQL `js/file-access-to-http` mitigation:** the only suppressed flow is
+  the designed credential flow — the `Authorization` header carries
+  file-derived credentials (the point of the discovery + state-machine
+  pipeline), documented inline at the `doRequest` sink and carrying the
+  path-scoped `codeql[js/file-access-to-http]` suppression with justification.
+  The rule stays globally enabled. The attachment-upload flow (multipart
+  `FormData` bodies) is deliberately NOT covered by that suppression: its
+  `file_path` → bytes → request-body path keeps the rule active, and the
+  upload source is hardened before it reaches the client (`readUploadFile` in
+  `server.ts` — realpath confinement to an upload root, sensitive-location
+  deny-list, extension allow-list, size cap, and path-free generic errors), so
+  any alert on the upload data flow is reviewed against that hardening rather
+  than blanket-suppressed.
 
 `GiteaApiError extends Error` with typed `{status, statusText, body}` fields so
 callers can branch on `err.status === 401` without substring-matching the
@@ -325,6 +327,7 @@ handshake instructions and the tool cookbook.
 | `GITEA_TOKEN` | No | `cli.ts` → `GiteaClient` | API access token. One of several auth candidates, tried after a `.git/config [gitea]` token and before the git credential store; always sent as `Authorization: token`. If no candidate resolves, the server starts anonymously and write calls fail `401/403` — the `gitea_status` tool and `gitea-configure` skill guide the user to add one. |
 | `GITEA_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default repository owner so `owner` can be omitted per call; defaults to the selected remote's owner. |
 | `GITEA_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default repository name so `repo` can be omitted per call; defaults to the selected remote's repo. |
+| `GITEA_UPLOAD_ROOT` | No | `server.ts` (`readUploadFile`) | Root directory attachment uploads may read from. Defaults to the server's working directory; the realpath-resolved `file_path` must stay inside this root. |
 | `NPM_TOKEN` | No (publish only) | `make publish` | npm publish token; never read at runtime |
 
 All four `GITEA_*` variables are optional overrides; none is validated as

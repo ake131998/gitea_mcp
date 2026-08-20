@@ -50,7 +50,11 @@ comment id is required.
 
 `create_issue_attachment` / `create_issue_comment_attachment` read `file_path`
 from the machine running gitea-mcp and upload it as multipart/form-data. Confirm
-with the user before uploading any file. Optional `name` overrides the stored
+with the user before uploading any file. Upload sources are confined: the path
+must resolve inside the server's working directory (or `GITEA_UPLOAD_ROOT`),
+pass a filename-extension allow-list (text, documents, images, archives,
+patches), avoid sensitive locations (`.git`, `.env*`, credentials, keys), and
+stay under a 50 MiB cap. Optional `name` overrides the stored
 filename (default: the file's basename). Attachments are identified by
 `attachment_id` from `list_issue_attachments`; `edit_issue_attachment` only
 renames, `delete_issue_attachment` is IRREVERSIBLE. Instances can disable

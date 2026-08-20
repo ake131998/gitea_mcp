@@ -80,13 +80,152 @@ import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsFo
 import type { DiscoverCredentialsForHostOptions } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json") as { version: string };
+
+// ── Attachment upload confinement (Issue #76) ──
+// The two attachment tools read a caller-supplied local path and send its
+// bytes to Gitea. Tool arguments cross a trust boundary (an untrusted MCP
+// client or prompt-injected content can choose the path), so the source must
+// be confined before anything is read, mirroring how CVE-2026-73498 was fixed
+// upstream (path confinement via validate_safe_path, not transport gating):
+//   1. realpath confinement — the resolved path must stay inside the upload
+//      root (process.cwd() by default, GITEA_UPLOAD_ROOT to widen/relocate);
+//      traversal (`..`), absolute paths outside the root, and symlinks that
+//      escape it are rejected because realpath canonicalizes them.
+//   2. sensitive-location deny-list — .git dirs, .env*, credentials/keys,
+//      .ssh/.aws/.gnupg homes, /proc, /sys, /dev — defense-in-depth even for
+//      roots that legitimately contain them.
+//   3. extension allow-list — only common attachment document/image/archive/
+//      log/text types, so executables and key material never enter memory.
+//   4. size cap — stat BEFORE readFile; large files are rejected before their
+//      bytes are materialized. (stat + readFile is not the TOCTOU documented
+//      in git-config.ts: there the CONTENT was security-relevant between the
+//      check and the read; here the check only bounds memory, and the upload
+//      itself is user-confirmed.)
+// Errors are generic and never echo the local path: Node embeds the full path
+// in readFile/stat error messages, which would give an untrusted client an
+// existence-oracle (ENOENT/EACCES/EISDIR) over arbitrary host paths.
+
+/** Hard size cap for one uploaded file: 50 MiB (instances commonly cap at 4-32 MiB and fail 413/422). */
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** Filename extensions allowed for uploads (lowercase, leading dot). */
+const UPLOAD_EXTENSIONS = new Set([
+  // text
+  ".txt", ".md", ".log", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+  // documents
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
+  // images
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".ico",
+  // archives
+  ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z",
+  // patches / diffs (plain text)
+  ".patch", ".diff",
+]);
+
+/**
+ * Sensitive basenames/paths rejected even inside an allowed root. Matched on
+ * the canonical realpath: a leading-dot env file, VCS/credential directories,
+ * key/cert material, and the pseudo-filesystems.
+ */
+function isSensitiveUploadPath(canonical: string): boolean {
+  const base = basename(canonical).toLowerCase();
+  if (base === ".git" || base.startsWith(".env")) return true;
+  if (/(^|\.)git(config|credentials|ignore|attributes|modules)$/.test(base)) return true;
+  if (/(^|[-_.])(id_rsa|id_ed25519|id_ecdsa|identity|authorized_keys|known_hosts)$/.test(base)) return true;
+  if (/\.(pem|key|p12|pfx|kdbx|keystore|jks)$/.test(base)) return true;
+  const lower = canonical.toLowerCase();
+  // A path inside a `.git` directory (e.g. `<root>/repo.git/config`) is VCS
+  // metadata — reject on the directory component, not just the basename.
+  if (lower.split(/[\\/]+/).some((seg) => seg === ".git" || seg.endsWith(".git"))) return true;
+  if (lower.startsWith("/proc/") || lower === "/proc") return true;
+  if (lower.startsWith("/sys/") || lower === "/sys") return true;
+  if (lower.startsWith("/dev/") || lower === "/dev") return true;
+  const homeSuffix = ["/.ssh/", "/.aws/", "/.gnupg/", "/.docker/"];
+  if (homeSuffix.some((suffix) => lower.includes(suffix))) return true;
+  return false;
+}
+
+/** Compute the confining upload root: GITEA_UPLOAD_ROOT when set (canonicalized), else process.cwd(). */
+async function resolveUploadRoot(env: NodeJS.ProcessEnv): Promise<string> {
+  const configured = env.GITEA_UPLOAD_ROOT;
+  if (configured === undefined || configured === "") return process.cwd();
+  return realpath(configured);
+}
+
+/**
+ * relative() that returns undefined when canonical is not under root
+ * (it climbs out with a leading `..` segment, or is an unrelated absolute
+ * path / a different drive on Windows).
+ */
+function relativePath(root: string, canonical: string): string | undefined {
+  if (canonical === root) return "";
+  const rel = relative(root, canonical);
+  if (rel === "" || isAbsolute(rel)) return undefined;
+  if (rel.split(sep)[0] === "..") return undefined;
+  return rel;
+}
+
+function extnameLower(path: string): string {
+  const base = basename(path);
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return ""; // no extension, or a dotfile like ".gitignore"
+  return base.slice(dot).toLowerCase();
+}
+
+/**
+ * Read one attachment upload source under the confinement rules above.
+ * Returns the file bytes plus the basename to store on the server. Throws a
+ * generic Error (no local path, no underlying errno message) on any rejection.
+ */
+async function readUploadFile(filePath: string, env: NodeJS.ProcessEnv = process.env): Promise<{ data: Uint8Array<ArrayBuffer>; name: string }> {
+  if (filePath !== filePath.trim() || filePath.length === 0) {
+    throw new Error("file_path is empty or whitespace-only.");
+  }
+  // Canonicalize first: traversal segments, escaping symlinks, and absolute
+  // paths outside the root all resolve to a realpath outside the root here.
+  let canonical: string;
+  try {
+    canonical = await realpath(filePath);
+  } catch {
+    throw new Error("Attachment upload rejected: file not found (the path must exist inside the upload root).");
+  }
+  const root = await resolveUploadRoot(env);
+  const rel = relativePath(root, canonical);
+  if (rel === undefined) {
+    throw new Error("Attachment upload rejected: file_path escapes the upload root. Set GITEA_UPLOAD_ROOT to the directory uploads may come from.");
+  }
+  if (isSensitiveUploadPath(canonical)) {
+    throw new Error("Attachment upload rejected: sensitive file or location (credentials, VCS data, key material, pseudo-filesystems).");
+  }
+  const ext = extnameLower(canonical);
+  if (!UPLOAD_EXTENSIONS.has(ext)) {
+    throw new Error(`Attachment upload rejected: extension '${ext || "(none)"}' is not in the upload allow-list (text, documents, images, archives, patches).`);
+  }
+  let size: number;
+  try {
+    size = (await stat(canonical)).size;
+  } catch {
+    throw new Error("Attachment upload rejected: file not readable.");
+  }
+  if (size > MAX_UPLOAD_BYTES) {
+    throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
+  }
+  let data: Uint8Array<ArrayBuffer>;
+  try {
+    data = await readFile(canonical);
+  } catch {
+    throw new Error("Attachment upload rejected: file not readable.");
+  }
+  return { data, name: basename(canonical) };
+}
 
 /**
  * Optional dependency-injection point for hermetic unit tests. When `discoverCredentials`
@@ -323,17 +462,17 @@ export async function createServer(
     "create_issue_attachment",
     {
       description:
-        "Upload a local file as an attachment on an issue by its `index` (multipart/form-data). `file_path` reads a LOCAL file from the machine running gitea-mcp — confirm with the user before uploading any file. Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404); oversized files fail 413/422.",
+        "Upload a local file as an attachment on an issue by its `index` (multipart/form-data). `file_path` reads a LOCAL file from the machine running gitea-mcp — confirm with the user before uploading any file. The path is confined: it must resolve inside the server's working directory (or GITEA_UPLOAD_ROOT), pass a filename-extension allow-list, avoid sensitive locations (.git, .env*, keys), and stay under a 50 MiB cap. Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404) and cap upload size (oversized files fail 413/422).",
       inputSchema: CreateIssueAttachmentSchema.shape,
     },
     async (input) => {
       const { owner, repo } = resolve(input);
-      const data = await readFile(input.file_path);
+      const { data, name } = await readUploadFile(input.file_path);
       const attachment = await client.createIssueAttachment(
         owner,
         repo,
         input.index,
-        { data, name: basename(input.file_path) },
+        { data, name },
         input.name,
       );
       return {
@@ -410,17 +549,17 @@ export async function createServer(
     "create_issue_comment_attachment",
     {
       description:
-        "Upload a local file as an attachment on one issue COMMENT by its `comment_id` (get the id from list_comments; multipart/form-data, same shape as create_issue_attachment). `file_path` reads a LOCAL file — confirm with the user before uploading. Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404).",
+        "Upload a local file as an attachment on one issue COMMENT by its `comment_id` (get the id from list_comments; multipart/form-data, same shape and rules as create_issue_attachment). `file_path` reads a LOCAL file from the machine running gitea-mcp — confirm with the user before uploading any file. The path is confined the same way (upload root, extension allow-list, sensitive locations, 50 MiB cap). Optional `name` overrides the stored filename (defaults to the file's basename). Returns the created attachment including its `id`. RISK: instances can disable attachments (404) and cap upload size (oversized files fail 413/422).",
       inputSchema: CreateIssueCommentAttachmentSchema.shape,
     },
     async (input) => {
       const { owner, repo } = resolve(input);
-      const data = await readFile(input.file_path);
+      const { data, name } = await readUploadFile(input.file_path);
       const attachment = await client.createIssueCommentAttachment(
         owner,
         repo,
         input.comment_id,
-        { data, name: basename(input.file_path) },
+        { data, name },
         input.name,
       );
       return {
