@@ -744,8 +744,7 @@ export class GiteaClient {
         // location deny-list, extension allow-list, size cap) per issue #76 —
         // uploading the confined file is the designed behavior. See the
         // doRequest doc comment. The rule stays globally enabled.
-        // codeql[js/file-access-to-http]
-        init.body = body;
+        init.body = /* codeql[js/file-access-to-http] */ body;
       } else {
         headers["Content-Type"] = "application/json";
         // Intentional (flow 1, credential): `init` carries the file-derived
