@@ -137,10 +137,18 @@ function execGit(
  * Read the `[gitea "<url>"] token` / bare `[gitea] token` value through git's
  * own config machinery: `git config get --url=<baseUrl> gitea.token`. The
  * `--url` lookup returns the best URL-matching subsection and falls back to
- * the bare `[gitea]` section natively (git-config(1)), replicating the old
- * in-process scoped→bare matching in one call — while reading the secret via
- * git's stdout instead of a `node:fs` file read (which was the CodeQL
- * `js/file-access-to-http` source). Requires git ≥ 2.46 (`config get`).
+ * the bare `[gitea]` section natively (git-config(1)), while reading the
+ * secret via git's stdout instead of a `node:fs` file read (which was the
+ * CodeQL `js/file-access-to-http` source). Requires git ≥ 2.46 (`config get`).
+ *
+ * NOTE — matching is git's urlmatch, not the old exact-string section match:
+ * it normalizes URLs, so e.g. a scoped section whose name carries a trailing
+ * slash matches a baseUrl without one (the old in-process parser did not).
+ * Exit-code caveat: on git < 2.46 the unknown `get` subcommand also exits 1 —
+ * indistinguishable from "key not present" — so the config-token source fails
+ * silently there (credential `fill` still works; only `[gitea]` tokens are
+ * lost). This cannot be discriminated without stderr parsing, which is
+ * deliberately avoided; the requirement is documented in the README instead.
  */
 async function gitConfigTokenForUrl(
   baseUrl: string,

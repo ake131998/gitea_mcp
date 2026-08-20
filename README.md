@@ -43,6 +43,7 @@ The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](ht
 ## Requirements
 
 - **Node.js ≥ 24** — uses the global `fetch`
+- **git ≥ 2.46** on `PATH` — used for credential discovery (`git config get` / `git credential fill`; `git credential fill` also honors every configured credential helper, including OS keychains). When git cannot be used at all, discovery falls back to `GITEA_TOKEN`-only / anonymous mode — `gitea_status` reports `gitAvailable: false`. On git < 2.46, the `.git/config [gitea]` token source silently fails (exit codes are indistinguishable); credential helpers and `GITEA_TOKEN` still work.
 - A **Gitea instance** (self-hosted or Gitea Cloud) reachable over HTTP
 - A **Gitea API token** (or a git credential) for anything beyond reading public repositories
 

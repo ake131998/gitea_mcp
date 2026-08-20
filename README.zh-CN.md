@@ -43,6 +43,7 @@
 ## 环境要求
 
 - **Node.js ≥ 24** —— 使用全局 `fetch`
+- **git ≥ 2.46**（在 `PATH` 上）—— 用于凭据发现（`git config get` / `git credential fill`；`git credential fill` 同时支持所有已配置的凭据 helper，含 OS 钥匙串）。git 完全不可用时，发现降级为仅 `GITEA_TOKEN` / 匿名模式——`gitea_status` 会报告 `gitAvailable: false`。git < 2.46 时，`.git/config [gitea]` 令牌来源会静默失效（退出码不可区分）；凭据 helper 与 `GITEA_TOKEN` 仍可用。
 - 一个可通过 HTTP 访问的 **Gitea 实例**（自托管或 Gitea Cloud）
 - 一个 **Gitea API 令牌**（或一条 git 凭据），用于读取公开仓库以外的操作
 
