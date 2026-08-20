@@ -1102,6 +1102,35 @@ describe("attachment upload confinement (Issue #76)", () => {
     expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
   });
 
+  it("rejects the remaining sensitive-location branches (gitconfig regex, /sys, /dev, home dirs)", async () => {
+    await writeFile(join(uploadRoot, ".gitconfig"), new Uint8Array([1]));
+    await writeFile(join(uploadRoot, ".git-credentials"), new Uint8Array([1]));
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r");
+    const handler = registeredTools(server as never)["create_issue_attachment"].handler;
+    // git-config/credentials basename regex branch
+    for (const name of [".gitconfig", ".git-credentials"]) {
+      await expect(handler({ index: 3, file_path: join(uploadRoot, name) }))
+        .rejects.toThrow(/sensitive file or location/);
+    }
+    // pseudo-filesystem branches (/sys, /dev) and home-dir suffixes, via a
+    // root that contains them: reuse the "/" root trick for /sys and /dev.
+    if (process.platform !== "win32") {
+      process.env.GITEA_UPLOAD_ROOT = "/";
+      await expect(handler({ index: 3, file_path: "/sys" })).rejects.toThrow(/sensitive file or location/);
+      await expect(handler({ index: 3, file_path: "/dev" })).rejects.toThrow(/sensitive file or location/);
+      const home = process.env.HOME ?? "/root";
+      await mkdir(join(home, ".ssh"), { recursive: true }).catch(() => {});
+      await writeFile(join(home, ".ssh", "config"), new Uint8Array([1])).catch(() => {});
+      // `config` alone is not deny-listed by basename; the /.ssh/ directory
+      // suffix is what must reject it (the homeSuffix branch).
+      await expect(handler({ index: 3, file_path: join(home, ".ssh", "config") }))
+        .rejects.toThrow(/sensitive file or location/);
+      await rm(join(home, ".ssh", "config"), { force: true }).catch(() => {});
+    }
+    expect(mockClient.createIssueAttachment).not.toHaveBeenCalled();
+  });
+
   it("rejects extensions outside the allow-list", async () => {
     await writeFile(join(uploadRoot, "payload.exe"), new Uint8Array([1]));
     await writeFile(join(uploadRoot, "noext"), new Uint8Array([1]));

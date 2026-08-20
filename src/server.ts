@@ -138,7 +138,7 @@ const UPLOAD_EXTENSIONS = new Set([
 function isSensitiveUploadPath(canonical: string): boolean {
   const base = basename(canonical).toLowerCase();
   if (base === ".git" || base.startsWith(".env")) return true;
-  if (/(^|\.)git(config|credentials|ignore|attributes|modules)$/.test(base)) return true;
+  if (/(^|[-_.])git[-_.]?(config|credentials|ignore|attributes|modules)$/.test(base)) return true;
   if (/(^|[-_.])(id_rsa|id_ed25519|id_ecdsa|identity|authorized_keys|known_hosts)$/.test(base)) return true;
   if (/\.(pem|key|p12|pfx|kdbx|keystore|jks)$/.test(base)) return true;
   const lower = canonical.toLowerCase();
@@ -172,7 +172,7 @@ async function resolveUploadRoot(): Promise<string> {
 function relativePath(root: string, canonical: string): string | undefined {
   if (canonical === root) return "";
   const rel = relative(root, canonical);
-  if (rel === "" || isAbsolute(rel)) return undefined;
+  if (isAbsolute(rel)) return undefined;
   if (rel.split(sep)[0] === "..") return undefined;
   return rel;
 }
@@ -218,20 +218,23 @@ async function readUploadFile(filePath: string): Promise<{ data: Uint8Array<Arra
   // calls (the TOCTOU class CodeQL flags). The handle pins the inode, so the
   // size check bounds exactly the bytes that are then read.
   let data: Uint8Array<ArrayBuffer>;
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    const handle = await open(canonical, "r");
-    try {
-      const size = (await handle.stat()).size;
-      if (size > MAX_UPLOAD_BYTES) {
-        throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
-      }
-      data = await readFile(handle);
-    } finally {
-      await handle.close();
+    handle = await open(canonical, "r");
+  } catch {
+    throw new Error("Attachment upload rejected: file not readable.");
+  }
+  try {
+    const size = (await handle.stat()).size;
+    if (size > MAX_UPLOAD_BYTES) {
+      throw new Error(`Attachment upload rejected: file is ${size} bytes, over the ${MAX_UPLOAD_BYTES} byte cap. Instances commonly fail oversized uploads with 413/422 anyway.`);
     }
+    data = await readFile(handle);
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("Attachment upload rejected:")) throw err;
     throw new Error("Attachment upload rejected: file not readable.");
+  } finally {
+    await handle.close();
   }
   return { data, name: basename(canonical) };
 }
