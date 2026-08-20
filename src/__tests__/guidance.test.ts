@@ -102,6 +102,16 @@ describe("enriched tool descriptions", () => {
     expect(d("list_action_runs").toLowerCase()).toContain("page");
     expect(d("cancel_action_run")).toContain("DESTRUCTIVE");
     expect(d("rerun_action_run").toLowerCase()).toContain("confirm");
+    // Issue #76: the two upload tools must carry the unified LOCAL-file /
+    // confirm-before-upload / confined-path / oversized-failure wording.
+    expect(d("create_issue_attachment")).toContain("LOCAL");
+    expect(d("create_issue_attachment")).toContain("confirm");
+    expect(d("create_issue_attachment")).toContain("GITEA_UPLOAD_ROOT");
+    expect(d("create_issue_attachment")).toContain("413/422");
+    expect(d("create_issue_comment_attachment")).toContain("LOCAL");
+    expect(d("create_issue_comment_attachment")).toContain("confirm");
+    expect(d("create_issue_comment_attachment")).toContain("same shape and rules");
+    expect(d("create_issue_comment_attachment")).toContain("413/422");
   });
 });
 

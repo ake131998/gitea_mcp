@@ -1,0 +1,12 @@
+# Codecov report style only — CI never fails on coverage
+# (`fail_ci_if_error: false` in .github/workflows/ci.yml). Patch coverage is
+# reported as informational: the hard gates are `make lint`/`make build`/
+# `make test` in the check job.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true

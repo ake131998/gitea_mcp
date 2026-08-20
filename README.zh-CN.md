@@ -90,6 +90,7 @@ node dist/cli.js
 | `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `.git/config [gitea]` 令牌之后、git 凭据存储之前（见[令牌发现](#令牌发现)）。 |
 | `GITEA_DEFAULT_OWNER` | 否 | 默认仓库所有者，免去每次传入 `owner` 参数 |
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
+| `GITEA_UPLOAD_ROOT` | 否 | 附件上传（`create_issue_attachment` / `create_issue_comment_attachment`）允许读取的根目录。默认为服务器工作目录；解析后的路径必须位于该根目录内。 |
 
 ### 自动发现的工作方式
 
@@ -271,12 +272,12 @@ gitea-mcp
 
 | 工具 | 说明 |
 |------|------|
-| `create_issue_attachment` | 将本地文件（`file_path`）上传为议题（`index`）的附件，可选 `name` 重命名 |
+| `create_issue_attachment` | 将本地文件（`file_path`）上传为议题（`index`）的附件，可选 `name` 重命名。路径受限：必须位于上传根目录（cwd 或 `GITEA_UPLOAD_ROOT`）内，且通过扩展名白名单与大小上限 |
 | `list_issue_attachments` | 列出议题的附件 |
 | `get_issue_attachment` | 按 `attachment_id` 获取单个附件的元数据 |
 | `edit_issue_attachment` | 按 `attachment_id` 重命名附件 |
 | `delete_issue_attachment` | 按 `attachment_id` 删除附件 |
-| `create_issue_comment_attachment` | 将本地文件上传为评论（`comment_id`）的附件，可选 `name` 重命名 |
+| `create_issue_comment_attachment` | 将本地文件上传为评论（`comment_id`）的附件，可选 `name` 重命名；路径限制与 `create_issue_attachment` 相同 |
 
 > **说明：** 附件工具的 `file_path` 读取运行 `gitea-mcp` 的机器上的本地文件。
 > 实例可能禁用附件功能（返回 404 表示未开启），并限制上传大小（超限返回 413/422）。

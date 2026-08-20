@@ -514,6 +514,14 @@ export interface ListActionRunsParams {
 
 // ── Releases ──
 
+/**
+ * A request body: JSON-serializable data or a multipart upload form. The
+ * union keeps the multipart branch of `doRequest` a type-narrowing (`typeof`
+ * / `instanceof`) instead of an `unknown`-typed free-for-all, so static
+ * analysis (CodeQL taint tracking) sees one explicit sink per branch.
+ */
+export type RequestBody = FormData | Record<string, unknown>;
+
 // Gitea's generic Attachment model — shared by the issue, issue-comment, and
 // release asset endpoints (field-identical across all three).
 export interface Attachment {
@@ -686,33 +694,33 @@ export class GiteaClient {
    * branch on `status` (never on the message string). The `authHeader` is
    * pre-built by the caller from the active candidate + scheme.
    *
-   * SECURITY (CodeQL `js/file-access-to-http`): two designed file → HTTP data
-   * flows terminate at the `fetch` sink below, and the single path-scoped
-   * suppression intentionally covers both:
+   * SECURITY (CodeQL `js/file-access-to-http`): two designed file → HTTP
+   * data flows reach the fetch sink below. Each carries its OWN justified
+   * line-scoped suppression at the point the taint enters the request; the
+   * rule itself stays globally enabled as a guardrail against real backdoor
+   * injection, and neither suppression covers the other's flow.
    *
-   * 1. The `Authorization` header carries credentials read from local git
-   *    files (`~/.git-credentials` / `.git/config` →
-   *    `CandidateCredential.secret` → `buildAuthHeader`, see `credentials.ts`).
-   *    This is the designed authentication pipeline (docs/architecture.md
-   *    §5.3), NOT information exfiltration: the secret is sent verbatim
-   *    because that is its purpose, and AGENTS.md §4 forbids logging or
-   *    echoing it anywhere else.
+   * 1. Credential flow — the `Authorization` header (and the `init` object
+   *    carrying it) holds credentials read from local git files
+   *    (`~/.git-credentials` / `.git/config` → `CandidateCredential.secret`
+   *    → `buildAuthHeader`, see `credentials.ts`). This is the designed
+   *    authentication pipeline (docs/architecture.md §5.3), NOT information
+   *    exfiltration: the secret is sent verbatim because that is its purpose,
+   *    and AGENTS.md §4 forbids logging or echoing it anywhere else.
    *
-   * 2. Attachment uploads (`create_issue_attachment` /
-   *    `create_issue_comment_attachment`) send the local file the user
-   *    explicitly asked to attach: `server.ts` reads `file_path` → bytes →
-   *    `Blob` → `FormData` → `init.body`. Uploading the named file is the
-   *    entire point of these tools, not exfiltration; the tool descriptions
-   *    and `assets/instructions.md` require user confirmation before any
-   *    upload, and no other file content ever enters a request body.
-   *
-   * The rule stays globally enabled as a guardrail against real backdoor
-   * injection; only this sink is suppressed.
+   * 2. Attachment-upload flow — multipart `FormData` bodies carry a local
+   *    file's bytes because uploading that file is the entire point of the
+   *    attachment tools. The upload source is hardened BEFORE it reaches
+   *    this method by the `readUploadFile` confinement choke point in
+   *    `server.ts` (realpath upload-root confinement, sensitive-location
+   *    deny-list, extension allow-list, size cap, path-free errors), per
+   *    issue #76: the rule stayed active until the source was hardened;
+   *    with the hardening in place the suppression is justified.
    */
   private async doRequest<T>(
     method: string,
     path: string,
-    body: unknown,
+    body: RequestBody | undefined,
     authHeader: string | null,
   ): Promise<T> {
     // Guard: every API tool enters here through request(), which already checks
@@ -724,31 +732,44 @@ export class GiteaClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
 
-    const init: RequestInit = { method, headers };
-    if (body !== undefined) {
-      if (body instanceof FormData) {
-        // Multipart upload (issue/comment attachments): let fetch derive the
-        // Content-Type with its own boundary — a manually set Content-Type
-        // would omit the boundary parameter and break the request.
-        init.body = body;
-      } else {
-        headers["Content-Type"] = "application/json";
-        // Intentional: both designed file → HTTP flows (the Authorization
-        // header carrying file-derived credentials, and user-requested
-        // attachment uploads as FormData bodies) terminate at the shared
-        // fetch sink — see the doRequest doc comment above. Path-scoped
-        // suppression for this sink; the rule stays globally enabled.
-        // codeql[js/file-access-to-http]
-        init.body = JSON.stringify(body);
-      }
+    // Multipart uploads take a dedicated path: the FormData body goes straight
+    // into its own RequestInit and fetch call, so the file-derived bytes and
+    // the file-derived auth header each reach exactly one sink below (the
+    // fetch calls carry the justified path-scoped suppressions; see the
+    // doRequest doc comment for both designed flows).
+    if (body instanceof FormData) {
+      // Intentional (flow 2, attachment upload): the file bytes in `body`
+      // enter the request on the init line below — they were read through
+      // the `readUploadFile` confinement choke point in `server.ts`
+      // (upload-root realpath confinement, sensitive-location deny-list,
+      // extension allow-list, size cap) per issue #76 — uploading the
+      // confined file is the designed behavior. See the doRequest doc
+      // comment. The rule stays globally enabled.
+      const init: RequestInit = { method, headers, body }; // lgtm[js/file-access-to-http]
+      const response = await fetch(url, init);
+      return this.parseResponse<T>(response);
     }
 
-    // Intentional: same two designed file → HTTP flows as above — see the
-    // doRequest doc comment (file-derived credentials + user-requested
-    // attachment uploads), not exfiltration.
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      // Intentional (flow 1, credential): `init` carries the file-derived
+      // auth header built by buildAuthHeader (see the doRequest doc comment
+      // above). Path-scoped suppression for this sink; the rule stays
+      // globally enabled.
+      // codeql[js/file-access-to-http]
+      init.body = JSON.stringify(body);
+    }
+
+    // Intentional credential authentication (docs/architecture.md §5.3,
+    // AGENTS.md §4), not exfiltration — see the doRequest doc comment.
     // codeql[js/file-access-to-http]
     const response = await fetch(url, init);
+    return this.parseResponse<T>(response);
+  }
 
+  /** Shared non-2xx / 204 / JSON handling for both doRequest paths. */
+  private async parseResponse<T>(response: Response): Promise<T> {
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
       throw new GiteaApiError(response.status, response.statusText, errorText);
@@ -782,7 +803,7 @@ export class GiteaClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown,
+    body?: RequestBody,
   ): Promise<T> {
     // Single guard point: when unconfigured, throw before any fetch. This
     // covers every API tool including search_issues / list_my_repos which

@@ -91,7 +91,7 @@ export const CreateIssueAttachmentSchema = z.object({
   owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
   repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
   index: z.number().int().min(1).describe("Issue number"),
-  file_path: z.string().min(1).describe("Local path to the file to upload"),
+  file_path: z.string().min(1).describe("LOCAL path (on the machine running gitea-mcp) to the file to upload — confirm with the user first. Must resolve inside the upload root (server working directory or GITEA_UPLOAD_ROOT), pass the extension allow-list, avoid sensitive locations, and stay under the size cap"),
   name: z.string().optional().describe("Attachment name stored on the server (defaults to the file's basename)"),
 });
 
@@ -127,7 +127,7 @@ export const CreateIssueCommentAttachmentSchema = z.object({
   owner: z.string().optional().describe("Repository owner (defaults to GITEA_DEFAULT_OWNER)"),
   repo: z.string().optional().describe("Repository name (defaults to GITEA_DEFAULT_REPO)"),
   comment_id: z.number().int().min(1).describe("Comment ID"),
-  file_path: z.string().min(1).describe("Local path to the file to upload"),
+  file_path: z.string().min(1).describe("LOCAL path (on the machine running gitea-mcp) to the file to upload — confirm with the user first. Must resolve inside the upload root (server working directory or GITEA_UPLOAD_ROOT), pass the extension allow-list, avoid sensitive locations, and stay under the size cap"),
   name: z.string().optional().describe("Attachment name stored on the server (defaults to the file's basename)"),
 });
 
