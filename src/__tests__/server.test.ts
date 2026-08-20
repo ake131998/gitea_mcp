@@ -17,8 +17,9 @@ vi.mock("../gitea-client.js", () => ({
 // filesystem, since readUploadFile's security behavior (symlink escape,
 // canonical basename, stat-before-read) can only be asserted against the
 // real fs, mirroring guidance.test.ts's real-asset reads.
-const realReadFileRef: typeof import("node:fs/promises")["readFile"] =
-  await vi.importActual("node:fs/promises").then((m) => m.readFile);
+const realReadFileRef = (await vi.importActual<
+  typeof import("node:fs/promises")
+>("node:fs/promises")).readFile;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const wrappedReadFile = vi.fn(async (...args: Parameters<typeof actual.readFile>) =>
