@@ -39,7 +39,7 @@ jobs:
           # ignored (the `js/file-access-to-http` suppressions at the doRequest
           # fetch sink are intentional and documented in docs/architecture.md
           # §5.3 — without this pack they silently do nothing).
-          packs: codeql/${{ matrix.language }}-queries:AlertSuppression.ql
+          packs: codeql/javascript-queries:AlertSuppression.ql
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
