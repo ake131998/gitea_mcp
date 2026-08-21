@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, isAbsolute, resolve } from "node:path";
-import { homedir } from "node:os";
+import { execFile } from "node:child_process";
 import {
   type CandidateCredential,
   type CredentialDiscoveryResult,
@@ -26,46 +26,260 @@ export interface RawRemote {
 export interface DiscoverOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  /** Override credential-store paths (defaults to XDG then `~/.git-credentials`). */
-  credentialsPaths?: string[];
 }
 
 /**
  * Options for host-scoped credential re-discovery (runtime configuration).
- * Unlike `DiscoverOptions`, a `baseUrl` is required so the host can be derived;
- * `username` optionally narrows credential-store entries to a single identity.
+ * Unlike `DiscoverOptions`, a `baseUrl` is required so protocol/host can be
+ * derived; `username` optionally narrows git's credential lookup to a single
+ * identity.
  */
 export interface DiscoverCredentialsForHostOptions {
   baseUrl: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  credentialsPaths?: string[];
   /**
-   * When set, credential-store entries are strictly filtered by
-   * `entry.username === username` — no fallback to other identities.
-   * `undefined` means "no username filter" (collect all host-matching entries).
+   * When set, the git credential lookup is narrowed to this identity — the
+   * username is fed to `git credential fill` AND the helper-returned username
+   * is strictly filtered (`returned === username`), with no fallback to other
+   * identities. `undefined` means "no username filter" (git picks the
+   * credential it would use for this host).
    */
   username?: string;
-  /** `owner/repo` path used to score credential-store entries by specificity. */
+  /** `owner/repo` path fed to `git credential fill` (used by helpers honoring `credential.useHttpPath`). */
   repoPath?: string;
 }
 
 /**
- * A parsed `~/.git-credentials` line. Both `username` and `password` are
- * URL-decoded. Either may be absent:
- * - `https://user:pass@host` → both present
- * - `https://:pass@host` → only password
- * - `https://tok@host` → only username (git stores a token here when the
- *   host accepts one as the "username"; the caller treats it as the secret)
- *
- * `path` is the URL pathname with leading/trailing slashes and any `.git`
- * suffix stripped, used to narrow multiple host matches toward the target repo.
+ * Result of host-scoped discovery. `gitAvailable` is false when the git
+ * binary could not be used at all (missing, failed to spawn, or timed out) —
+ * in that case only the `GITEA_TOKEN` env source can yield candidates, and
+ * diagnostics should guide the user to install git or set `GITEA_TOKEN`.
  */
-export interface ParsedCredentialEntry {
+export interface DiscoverCredentialsForHostResult {
+  candidates: CandidateCredential[];
+  gitAvailable: boolean;
+}
+
+/**
+ * Upper bound for one git subprocess invocation. A hung credential helper
+ * (e.g. an askpass program waiting for a GUI) must never block discovery or
+ * the `configure_gitea` tool indefinitely.
+ */
+const GIT_EXEC_TIMEOUT_MS = 10_000;
+
+/** Outcome of one git subprocess invocation (see `execGit`). */
+interface GitExecResult {
+  /** false when the git binary could not be run (missing / spawn error / killed by timeout). */
+  unavailable: boolean;
+  /** true when git exited 0. */
+  ok: boolean;
+  /** Process exit code when git ran (0 on success), null when unavailable. */
+  exitCode: number | null;
+  /** Decoded stdout — may carry secrets for `credential fill`; never log or interpolate it into errors. */
+  stdout: string;
+}
+
+/**
+ * Run one git subprocess non-interactively and classify its outcome.
+ *
+ * - `GIT_TERMINAL_PROMPT=0` is forced: `git credential fill` may otherwise
+ *   prompt on the terminal, whose stdio belongs to the MCP protocol.
+ * - The `timeout` option kills a hung subprocess (SIGTERM) — classified as
+ *   `unavailable` rather than an error, so discovery degrades to env-only
+ *   instead of hanging (same policy as a missing git binary).
+ * - A non-zero exit is a normal negative result ("git reports no value"),
+ *   the subprocess equivalent of `readOptionalFile`'s ENOENT → "" mapping.
+ * - SECURITY: stdout may carry the secret itself; it is returned to the
+ *   caller but MUST NOT be interpolated into error messages or logs.
+ */
+function execGit(
+  args: string[],
+  opts: { cwd: string; env: NodeJS.ProcessEnv; stdin?: string },
+): Promise<GitExecResult> {
+  return new Promise((resolvePromise) => {
+    const child = execFile(
+      "git",
+      args,
+      {
+        cwd: opts.cwd,
+        env: { ...opts.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: GIT_EXEC_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf8",
+      },
+      (err, stdout) => {
+        if (err) {
+          // Exit code (number) without a kill: git ran and reported a
+          // negative result. Anything else (spawn ENOENT, EACCES, killed by
+          // the timeout) means git could not be used at all.
+          if (typeof err.code === "number" && !err.killed) {
+            resolvePromise({ unavailable: false, ok: false, exitCode: err.code, stdout: "" });
+          } else {
+            resolvePromise({ unavailable: true, ok: false, exitCode: null, stdout: "" });
+          }
+          return;
+        }
+        resolvePromise({ unavailable: false, ok: true, exitCode: 0, stdout: stdout ?? "" });
+      },
+    );
+    if (opts.stdin !== undefined && child.stdin) {
+      // EPIPE here duplicates the failure already reported through the
+      // execFile callback above (git exited before reading stdin); only the
+      // redundant stream-level event is dropped, never the underlying error.
+      child.stdin.on("error", () => {});
+      child.stdin.end(opts.stdin);
+    }
+  });
+}
+
+/**
+ * Read the `[gitea "<url>"] token` / bare `[gitea] token` value through git's
+ * own config machinery: `git config get --url=<baseUrl> gitea.token`. The
+ * `--url` lookup returns the best URL-matching subsection and falls back to
+ * the bare `[gitea]` section natively (git-config(1)), while reading the
+ * secret via git's stdout instead of a `node:fs` file read (which was the
+ * CodeQL `js/file-access-to-http` source). Requires git ≥ 2.46 (`config get`).
+ *
+ * NOTE — matching is git's urlmatch, not the old exact-string section match:
+ * it normalizes URLs, so e.g. a scoped section whose name carries a trailing
+ * slash matches a baseUrl without one (the old in-process parser did not).
+ * Exit-code caveat: on git < 2.46 the unknown `get` subcommand also exits 1 —
+ * indistinguishable from "key not present" — so the config-token source fails
+ * silently there (credential `fill` still works; only `[gitea]` tokens are
+ * lost). This cannot be discriminated without stderr parsing, which is
+ * deliberately avoided; the requirement is documented in the README instead.
+ */
+async function gitConfigTokenForUrl(
+  baseUrl: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ unavailable: boolean; token?: string }> {
+  const result = await execGit(["config", "get", `--url=${baseUrl}`, "gitea.token"], { cwd, env });
+  if (result.unavailable) return { unavailable: true };
+  // Exit 1 is the documented "key not present"; any other non-zero exit is
+  // treated the same way (no token from this source) rather than crashing
+  // the server — the candidate list in `gitea_status` makes the absence
+  // visible and actionable.
+  if (!result.ok) return { unavailable: false };
+  const token = result.stdout.trim();
+  if (!token) return { unavailable: false };
+  return { unavailable: false, token };
+}
+
+/** Attributes extracted from `git credential fill` stdout. */
+interface FillResult {
+  unavailable: boolean;
   username?: string;
   password?: string;
+}
+
+/**
+ * Validate one credential-description attribute value: git's stdin format is
+ * line-oriented (`key=value\n`), so a value containing a newline/CR/NUL would
+ * inject ADDITIONAL attribute lines — e.g. a `repoPath` of `x\nhost=evil\n`
+ * would override the host and make `git credential fill` return the
+ * credential stored for `evil` (an untrusted MCP client controls `owner`/
+ * `repo`/`username` via configure_gitea; see server.ts's trust-boundary
+ * notes). Reject such values outright — never silently strip.
+ */
+function assertCredentialAttribute(kind: string, value: string): void {
+  if (/[\r\n\0]/.test(value)) {
+    throw new Error(
+      `Invalid ${kind} for git credential lookup: line breaks are not allowed.`,
+    );
+  }
+}
+
+/**
+ * Ask git for the credential it would use for a host via
+ * `git credential fill`: feed the credential description (key=value lines
+ * terminated by a blank line) on stdin, read `username=` / `password=` from
+ * stdout (git-credential(1)). This consults git's full credential machinery
+ * (config chain + every configured helper — including OS keychain helpers
+ * like wincred / osxkeychain / libsecret), making git the single canonical
+ * parser of credential storage; the secret enters this process via
+ * subprocess stdout, not a `node:fs` file read.
+ *
+ * SECURITY: every attribute value is validated by `assertCredentialAttribute`
+ * first — the description is line-oriented, and an embedded newline in
+ * `path`/`username` (both ultimately MCP-client-controlled) could inject a
+ * forged `host=` line and redirect the lookup to an arbitrary host's stored
+ * credential. `protocol`/`host` come from `new URL(baseUrl)` and cannot carry
+ * newlines, but are validated too (defense in depth).
+ *
+ * Semantics (git answers, we do not enumerate):
+ * - With `username` fed on stdin, helpers are asked for that exact identity;
+ *   the returned username is still strictly filtered by the caller.
+ * - Without it, git returns the credential it would use — the first matching
+ *   store entry in file order — not every host-matching entry.
+ * - Empty values (`username=`) map to undefined; git exits non-zero when no
+ *   helper can complete the credential, which maps to "no candidate" (the
+ *   terminal prompt is disabled, so missing credentials cannot block).
+ */
+async function gitCredentialFill(input: {
+  protocol: string;
   host: string;
-  path: string;
+  path?: string;
+  username?: string;
+}, cwd: string, env: NodeJS.ProcessEnv): Promise<FillResult> {
+  assertCredentialAttribute("protocol", input.protocol);
+  assertCredentialAttribute("host", input.host);
+  if (input.path !== undefined) assertCredentialAttribute("path", input.path);
+  if (input.username !== undefined) assertCredentialAttribute("username", input.username);
+  const description = [
+    `protocol=${input.protocol}`,
+    `host=${input.host}`,
+    ...(input.path !== undefined ? [`path=${input.path}`] : []),
+    ...(input.username !== undefined ? [`username=${input.username}`] : []),
+    "", // blank line terminates the credential description
+  ].join("\n");
+  const result = await execGit(["credential", "fill"], { cwd, env, stdin: description });
+  if (result.unavailable) return { unavailable: true };
+  if (!result.ok) return { unavailable: false };
+
+  let username: string | undefined;
+  let password: string | undefined;
+  for (const line of result.stdout.split("\n")) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq);
+    const value = line.slice(eq + 1);
+    if (key === "username" && value !== "") username = value;
+    if (key === "password" && value !== "") password = value;
+  }
+  return { unavailable: false, username, password };
+}
+
+/**
+ * Build a `CandidateCredential` from a `git credential fill` result,
+ * preserving the store conventions of the old in-process parser:
+ * - password present → secret = password, username preserved (basic auth
+ *   needs it); scheme order from `orderSchemesForCredentialStore`.
+ * - username only (a helper returned just the identity — or a token stored
+ *   in the username position) → secret = username, `token` scheme first.
+ */
+function candidateFromFill(username: string | undefined, password: string | undefined): CandidateCredential | null {
+  if (password) {
+    return {
+      source: "credential-store",
+      username,
+      secret: password,
+      schemes: orderSchemesForCredentialStore(username),
+      status: "pending",
+      nextSchemeIndex: 0,
+    };
+  }
+  if (username) {
+    return {
+      source: "credential-store",
+      secret: username,
+      schemes: ["token", "basic"],
+      status: "pending",
+      nextSchemeIndex: 0,
+    };
+  }
+  return null;
 }
 
 /**
@@ -162,86 +376,6 @@ export function selectRemote(remotes: ParsedRemote[]): ParsedRemote | null {
   );
 }
 
-/**
- * Read a Gitea token from a git config. A scoped `[gitea "<baseUrl>"] token = ...`
- * section wins; a bare `[gitea] token = ...` is the fallback. Returns undefined
- * when neither matches.
- */
-export function readTokenFromGitConfig(content: string, baseUrl: string): string | undefined {
-  const escaped = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const scoped = content.match(new RegExp(`\\[gitea\\s+"${escaped}"\\]([\\s\\S]*?)(?=\\n\\s*\\[|$)`));
-  if (scoped) {
-    const t = scoped[1].match(/^\s*token\s*=\s*(.+?)\s*$/m);
-    if (t) return t[1];
-  }
-  const globalSection = content.match(/(?:^|\n)\[gitea\][\t ]*([\s\S]*?)(?=\n\s*\[|$)/);
-  if (globalSection) {
-    const t = globalSection[1].match(/^\s*token\s*=\s*(.+?)\s*$/m);
-    if (t) return t[1];
-  }
-  return undefined;
-}
-
-/**
- * Parse every credential-store line whose host matches. Each line is a URL of
- * the form `protocol://[user[:pass]]@host[:port][/path]`; malformed and
- * non-matching lines are skipped. Returns entries in file order; callers
- * narrow and re-sort by repo path specificity.
- *
- * The `password` field — when present — holds whatever the user typed into
- * git's password prompt: a real account password, a Personal Access Token,
- * or an OAuth token. Git itself does not distinguish, and neither does this
- * parser; the GiteaClient runtime tries each entry under multiple auth
- * schemes to discover what works.
- */
-export function parseGitCredentials(content: string, host: string): ParsedCredentialEntry[] {
-  const entries: ParsedCredentialEntry[] = [];
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    try {
-      const credUrl = new URL(line);
-      if (credUrl.host !== host) continue;
-      entries.push({
-        username: credUrl.username ? decodeURIComponent(credUrl.username) : undefined,
-        password: credUrl.password ? decodeURIComponent(credUrl.password) : undefined,
-        host: credUrl.host,
-        path: credUrl.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, ""),
-      });
-    } catch {
-      continue;
-    }
-  }
-  return entries;
-}
-
-/**
- * Score a credential entry's path specificity against the target repo path
- * (`owner/repo`). Higher = more specific. Used to narrow multiple host
- * matches toward the most relevant entry first.
- *
- * - Path is empty (host-only entry) → 0
- * - Path is a prefix of the repo path → length of the matching path
- * - Path does not match → -1 (deprioritized but still tried as a fallback)
- */
-function scoreEntryPath(entryPath: string, repoPath: string): number {
-  if (!entryPath) return 0;
-  if (!repoPath) return 0;
-  if (repoPath === entryPath || repoPath.startsWith(`${entryPath}/`)) {
-    return entryPath.length;
-  }
-  return -1;
-}
-
-/** Default credential-store paths: `$XDG_CONFIG_HOME/git/credentials` then `~/.git-credentials`. */
-export function defaultCredentialsPaths(): string[] {
-  const paths: string[] = [];
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg) paths.push(join(xdg, "git", "credentials"));
-  paths.push(join(homedir(), ".git-credentials"));
-  return paths;
-}
-
 async function readOptionalFile(path: string): Promise<string> {
   try {
     return await readFile(path, "utf-8");
@@ -262,6 +396,11 @@ async function readOptionalFile(path: string): Promise<string> {
  * shared common directory where `config` actually lives. A submodule uses the
  * same `gitdir:` pointer but has no `commondir`, so its config is read directly
  * from the pointed-to directory.
+ *
+ * Used for the remote-listing reads (baseUrl/owner/repo discovery and the
+ * `resolve_repo` tool) — secret retrieval goes through git itself instead
+ * (`gitConfigTokenForUrl` / `gitCredentialFill`), so this module never parses
+ * secret-bearing file content in-process.
  *
  * When no `.git` exists at all the conventional path is returned so the caller
  * can treat the missing file as empty content.
@@ -302,79 +441,56 @@ export async function resolveGitConfigPath(cwd: string): Promise<string> {
 }
 
 /**
- * Build a `CandidateCredential` from a parsed credential-store entry.
- *
- * - `https://:pass@host` or `https://user:pass@host` → secret = pass,
- *   username preserved (basic auth needs it).
- * - `https://tok@host` (username but no password) → secret = tok, no
- *   username: this is git's "store the token as the username" convention.
- *   Try `token` first (most common), fall back to `basic`.
- */
-function candidateFromEntry(entry: ParsedCredentialEntry): CandidateCredential | null {
-  if (entry.password) {
-    return {
-      source: "credential-store",
-      username: entry.username,
-      secret: entry.password,
-      schemes: orderSchemesForCredentialStore(entry.username),
-      status: "pending",
-      nextSchemeIndex: 0,
-    };
-  }
-  if (entry.username) {
-    return {
-      source: "credential-store",
-      secret: entry.username,
-      schemes: ["token", "basic"],
-      status: "pending",
-      nextSchemeIndex: 0,
-    };
-  }
-  return null;
-}
-
-/**
  * Re-run the three-source credential discovery for an explicit baseUrl.
  *
  * Sources (in priority order):
- *   1. `[gitea "<baseUrl>"] token` / bare `[gitea] token` from `.git/config`.
+ *   1. `[gitea "<baseUrl>"] token` / bare `[gitea] token` via
+ *      `git config get --url=<baseUrl> gitea.token`.
  *   2. `GITEA_TOKEN` env var.
- *   3. Every host-matching entry in a git credential store, narrowed by
- *      repo-path specificity and (optionally) strictly filtered by `username`.
+ *   3. The credential git itself would use for the host, via
+ *      `git credential fill` (config chain + credential helpers — the OS
+ *      keychain unlock the store plaintext file never had).
  *
- * When `username` is provided, credential-store entries whose
- * `entry.username !== username` are excluded entirely — no fallback to other
- * identities. When `username` is `undefined`, all host-matching entries are
- * collected (same behavior as startup discovery).
+ * When `username` is provided it is fed into the fill description AND the
+ * returned username is strictly filtered — no fallback to other identities.
+ * When `username` is `undefined`, git picks the credential (the first
+ * matching entry in store file order).
  *
- * Returns an empty array when no source yields a candidate (anonymous mode
- * or an unparseable baseUrl).
+ * When the git binary cannot be used (missing, spawn failure, timeout),
+ * sources 1 and 3 are skipped — `GITEA_TOKEN` (anonymous when absent) is the
+ * only remaining source — and `gitAvailable: false` is returned so
+ * `gitea_status` can surface the guidance. In-process parsing of credential
+ * files is deliberately NOT kept as a fallback: its mere presence would
+ * reintroduce the file-read source of CodeQL alert #8.
+ *
+ * Returns candidates in an empty array when no source yields a candidate
+ * (anonymous mode or an unparseable baseUrl).
  */
 export async function discoverCredentialsForHost(
   options: DiscoverCredentialsForHostOptions,
-): Promise<CandidateCredential[]> {
+): Promise<DiscoverCredentialsForHostResult> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
 
-  let host: string | undefined;
+  let parsed: URL | undefined;
   try {
-    host = new URL(options.baseUrl).host;
+    parsed = new URL(options.baseUrl);
   } catch {
-    host = undefined;
+    parsed = undefined;
   }
 
-  const gitConfigPath = await resolveGitConfigPath(cwd);
-  const gitConfigContent = await readOptionalFile(gitConfigPath);
-
   const candidates: CandidateCredential[] = [];
+  let gitAvailable = true;
 
-  // Source 1: .git/config [gitea "<baseUrl>"] token / bare [gitea] token.
-  if (host) {
-    const configToken = readTokenFromGitConfig(gitConfigContent, options.baseUrl);
-    if (configToken) {
+  if (parsed) {
+    // Source 1: [gitea "<baseUrl>"] token / bare [gitea] token via git config.
+    const configToken = await gitConfigTokenForUrl(options.baseUrl, cwd, env);
+    if (configToken.unavailable) {
+      gitAvailable = false;
+    } else if (configToken.token) {
       candidates.push({
         source: "gitea-config",
-        secret: configToken,
+        secret: configToken.token,
         schemes: ["token"],
         status: "pending",
         nextSchemeIndex: 0,
@@ -394,33 +510,30 @@ export async function discoverCredentialsForHost(
     });
   }
 
-  // Source 3..N: credential-store entries, host-matched and path-narrowed.
-  if (host) {
-    const paths = options.credentialsPaths ?? defaultCredentialsPaths();
-    const repoPath = options.repoPath ?? "";
-    const scored: { entry: ParsedCredentialEntry; score: number; order: number }[] = [];
-    let order = 0;
-    for (const path of paths) {
-      const cred = await readOptionalFile(path);
-      if (!cred) continue;
-      let entries = parseGitCredentials(cred, host);
+  // Source 3: the credential git itself would use (git credential fill).
+  if (parsed) {
+    const fill = await gitCredentialFill(
+      {
+        protocol: parsed.protocol.replace(/:$/, ""),
+        host: parsed.host,
+        path: options.repoPath,
+        username: options.username,
+      },
+      cwd,
+      env,
+    );
+    if (fill.unavailable) {
+      gitAvailable = false;
+    } else {
       // Strict username filter — no fallback to other identities.
-      if (options.username !== undefined) {
-        entries = entries.filter((e) => e.username === options.username);
-      }
-      for (const entry of entries) {
-        scored.push({ entry, score: scoreEntryPath(entry.path, repoPath), order: order++ });
-      }
-    }
-    // Sort by score desc; stable within same score (preserve file/discovery order).
-    scored.sort((a, b) => b.score - a.score || a.order - b.order);
-    for (const { entry } of scored) {
-      const candidate = candidateFromEntry(entry);
-      if (candidate) candidates.push(candidate);
+      const identityMatches =
+        options.username === undefined || fill.username === options.username;
+      const candidate = candidateFromFill(fill.username, fill.password);
+      if (identityMatches && candidate) candidates.push(candidate);
     }
   }
 
-  return candidates;
+  return { candidates, gitAvailable };
 }
 
 /**
@@ -431,10 +544,10 @@ export async function discoverCredentialsForHost(
  *   available — callers should treat that as "start the server unconfigured".
  *
  * candidates: collected via `discoverCredentialsForHost`, which re-runs the
- * three-source discovery (config token → env token → credential-store entries)
- * for the resolved baseUrl. When no remote and no env baseUrl exist, this
- * function returns null so the CLI can start the server in its unconfigured
- * state.
+ *   three-source discovery (git config token → env token → git credential
+ *   helpers) for the resolved baseUrl. When no remote and no env baseUrl
+ *   exist, this function returns null so the CLI can start the server in its
+ *   unconfigured state.
  *
  * owner/repo: `GITEA_DEFAULT_OWNER`/`GITEA_DEFAULT_REPO` (env) win; otherwise
  * taken from the selected remote.
@@ -453,11 +566,10 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
   if (!baseUrl) return null;
 
   const repoPath = selected ? `${selected.owner}/${selected.repo}` : undefined;
-  const candidates = await discoverCredentialsForHost({
+  const { candidates, gitAvailable } = await discoverCredentialsForHost({
     baseUrl,
     cwd,
     env,
-    credentialsPaths: options.credentialsPaths,
     repoPath,
   });
 
@@ -467,5 +579,6 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
     defaultRepo: env.GITEA_DEFAULT_REPO ?? selected?.repo,
     remote: selected?.remote,
     candidates,
+    gitAvailable,
   };
 }

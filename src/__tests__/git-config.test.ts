@@ -1,20 +1,75 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 
 vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
+vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
 
 import {
   parseGitRemoteUrl,
   readGitRemotes,
   parseRemotes,
   selectRemote,
-  readTokenFromGitConfig,
-  parseGitCredentials,
-  defaultCredentialsPaths,
   discoverConfig,
   discoverCredentialsForHost,
   resolveGitConfigPath,
 } from "../git-config.js";
+
+// ── Test doubles ──
+// readFile serves non-secret content (.git/config for remotes discovery);
+// execFile stands in for the git subprocesses (config get / credential fill),
+// the way gitea-client tests stub global.fetch.
+
+type ExecCall = { args: string[]; stdin?: string };
+
+let execCalls: ExecCall[] = [];
+
+function fakeChildFor(): ChildProcess {
+  // A minimal stand-in ChildProcess: only stdin is exercised (written then ended).
+  const listeners: Record<string, () => void> = {};
+  return {
+    stdin: {
+      on: (_event: string, cb: () => void) => { listeners.error = cb; },
+      end: (_data?: string) => { /* recorded by the end override below; no real pipe */ },
+    },
+  } as unknown as ChildProcess;
+}
+
+function mockExec(behavior: (call: ExecCall) => { code: number | "spawn-error" | "timeout"; stdout?: string }): void {
+  vi.mocked(execFile).mockImplementation(((
+    _cmd: string,
+    args: string[],
+    _opts: unknown,
+    callback: (err: (Error & { code?: number | string; killed?: boolean }) | null, stdout: string) => void,
+  ) => {
+    const call: ExecCall = { args: args as string[] };
+    execCalls.push(call);
+    const stdinWriter = (data?: string) => { if (data !== undefined) call.stdin = data; };
+    const result = behavior(call);
+    const child = fakeChildFor();
+    // Let the caller write stdin first, then deliver the outcome.
+    queueMicrotask(() => {
+      if (result.code === "spawn-error") {
+        const err = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" });
+        callback(err, "");
+      } else if (result.code === "timeout") {
+        const err = Object.assign(new Error("spawn git ETIMEDOUT"), { code: "ETIMEDOUT", killed: true });
+        callback(err, "");
+      } else if (result.code !== 0) {
+        const err = Object.assign(new Error(`git exited ${result.code}`), { code: result.code });
+        callback(err, "");
+      } else {
+        callback(null, result.stdout ?? "");
+      }
+    });
+    // Expose an end() that records the stdin payload, mirroring the real API
+    // shape used by execGit (`child.stdin.end(opts.stdin)`).
+    (child as { stdin: { on: (e: string, cb: () => void) => void; end: (data?: string) => void } }).stdin.end =
+      stdinWriter;
+    return child;
+  }) as never);
+}
 
 function mockFiles(files: Record<string, string>, dirs: string[] = []): void {
   vi.mocked(readFile).mockImplementation(async (path) => {
@@ -30,6 +85,38 @@ function mockFiles(files: Record<string, string>, dirs: string[] = []): void {
     throw err;
   });
 }
+
+/** Drive one `git config get --url=... gitea.token` and one `git credential fill` deterministically. */
+function mockGit(opts: {
+  configToken?: string | null; // null → exit 1 (key absent)
+  configUnavailable?: boolean;
+  fill?: { username?: string; password?: string } | null; // null → exit 128 (no credential)
+  fillUnavailable?: boolean;
+}): void {
+  mockExec((call) => {
+    if (call.args[0] === "config") {
+      if (opts.configUnavailable) return { code: "spawn-error" };
+      if (opts.configToken === null || opts.configToken === undefined) return { code: 1 };
+      return { code: 0, stdout: `${opts.configToken}\n` };
+    }
+    if (call.args[0] === "credential" && call.args[1] === "fill") {
+      if (opts.fillUnavailable) return { code: "spawn-error" };
+      if (opts.fill === null || opts.fill === undefined) return { code: 128 };
+      const lines = [
+        ...(opts.fill.username !== undefined ? [`username=${opts.fill.username}`] : []),
+        ...(opts.fill.password !== undefined ? [`password=${opts.fill.password}`] : []),
+      ];
+      return { code: 0, stdout: `${lines.join("\n")}\n` };
+    }
+    return { code: 1 };
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  execCalls = [];
+  mockExec(() => ({ code: 1 }));
+});
 
 describe("parseGitRemoteUrl", () => {
   it("parses scp-like SSH with .git suffix", () => {
@@ -188,113 +275,15 @@ describe("selectRemote", () => {
   });
 });
 
-describe("readTokenFromGitConfig", () => {
-  it("reads a scoped [gitea \"<baseUrl>\"] token", () => {
-    const content = '[gitea "https://gitea.example"]\n\ttoken = abc123\n';
-    expect(readTokenFromGitConfig(content, "https://gitea.example")).toBe("abc123");
-  });
-
-  it("matches only the requested baseUrl (other scopes ignored)", () => {
-    const content = '[gitea "https://other.example"]\n\ttoken = nope\n[gitea "https://gitea.example"]\n\ttoken = yes\n';
-    expect(readTokenFromGitConfig(content, "https://gitea.example")).toBe("yes");
-  });
-
-  it("falls back to a bare [gitea] token when no scoped match", () => {
-    const content = '[gitea]\n\ttoken = globaltok\n';
-    expect(readTokenFromGitConfig(content, "https://gitea.example")).toBe("globaltok");
-  });
-
-  it("prefers a scoped token over the bare [gitea] fallback", () => {
-    const content = '[gitea "https://gitea.example"]\n\ttoken = scoped\n[gitea]\n\ttoken = bare\n';
-    expect(readTokenFromGitConfig(content, "https://gitea.example")).toBe("scoped");
-  });
-
-  it("returns undefined when no token section matches", () => {
-    expect(readTokenFromGitConfig("[core]\n\tx = 1\n", "https://gitea.example")).toBeUndefined();
-  });
-
-  it("does not confuse [gitea \"url\"] with a bare [gitea] section", () => {
-    const content = '[gitea "https://gitea.example"]\n\ttoken = scoped\n';
-    expect(readTokenFromGitConfig(content, "https://other.example")).toBeUndefined();
-  });
-});
-
-describe("parseGitCredentials", () => {
-  it("returns username+password for a matching host", () => {
-    expect(parseGitCredentials("https://oauth2:secret@gitea.example\n", "gitea.example")).toEqual([
-      { username: "oauth2", password: "secret", host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("returns the entry with username only when no password is set", () => {
-    expect(parseGitCredentials("https://tokenonly@gitea.example\n", "gitea.example")).toEqual([
-      { username: "tokenonly", password: undefined, host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("skips entries for other hosts", () => {
-    expect(parseGitCredentials("https://oauth2:x@other.example\nhttps://oauth2:y@gitea.example\n", "gitea.example")).toEqual([
-      { username: "oauth2", password: "y", host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("URL-decodes the password", () => {
-    expect(parseGitCredentials("https://oauth2:a%2Bb@gitea.example\n", "gitea.example")).toEqual([
-      { username: "oauth2", password: "a+b", host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("skips blank and comment lines", () => {
-    expect(parseGitCredentials("\n# a comment\nhttps://oauth2:z@gitea.example\n", "gitea.example")).toEqual([
-      { username: "oauth2", password: "z", host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("skips malformed lines", () => {
-    expect(parseGitCredentials("not-a-url\nhttps://oauth2:z@gitea.example\n", "gitea.example")).toEqual([
-      { username: "oauth2", password: "z", host: "gitea.example", path: "" },
-    ]);
-  });
-
-  it("returns an empty array when nothing matches", () => {
-    expect(parseGitCredentials("https://x@other.example\n", "gitea.example")).toEqual([]);
-  });
-
-  it("matches a host with a port", () => {
-    expect(parseGitCredentials("https://oauth2:z@gitea.example:3000\n", "gitea.example:3000")).toEqual([
-      { username: "oauth2", password: "z", host: "gitea.example:3000", path: "" },
-    ]);
-  });
-});
-
-describe("defaultCredentialsPaths", () => {
-  it("includes the XDG path when XDG_CONFIG_HOME is set, before the home path", () => {
-    const saved = process.env.XDG_CONFIG_HOME;
-    process.env.XDG_CONFIG_HOME = "/tmp/xdg";
-    try {
-      const paths = defaultCredentialsPaths();
-      expect(paths[0]).toBe("/tmp/xdg/git/credentials");
-      expect(paths.length).toBe(2);
-    } finally {
-      if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
-      else process.env.XDG_CONFIG_HOME = saved;
-    }
-  });
-});
-
 describe("resolveGitConfigPath", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   it("returns the conventional .git/config when .git is a directory", async () => {
     mockFiles({}, ["/repo/.git"]);
-    await expect(resolveGitConfigPath("/repo")).resolves.toBe("/repo/.git/config");
+    expect(await resolveGitConfigPath("/repo")).toBe("/repo/.git/config");
   });
 
   it("returns the conventional path when .git does not exist", async () => {
     mockFiles({});
-    await expect(resolveGitConfigPath("/repo")).resolves.toBe("/repo/.git/config");
+    expect(await resolveGitConfigPath("/repo")).toBe("/repo/.git/config");
   });
 
   it("follows gitdir -> commondir (relative) to the shared config", async () => {
@@ -344,13 +333,10 @@ describe("resolveGitConfigPath", () => {
 });
 
 describe("discoverConfig", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
   it("returns null when there is no .git/config and no GITEA_BASE_URL", async () => {
     mockFiles({});
-    const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
     expect(cfg).toBeNull();
   });
 
@@ -360,7 +346,8 @@ describe("discoverConfig", () => {
       "/data/repo/.git/worktrees/wt/commondir": "../..\n",
       "/data/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/wt", env: {}, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/wt", env: {} });
     expect(cfg).toMatchObject({
       baseUrl: "https://gitea.example",
       defaultOwner: "owner",
@@ -376,20 +363,17 @@ describe("discoverConfig", () => {
         '[remote "upstream"]', "\turl = https://gitea.example/upstream/repo.git",
       ].join("\n"),
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
-    expect(cfg).toMatchObject({
-      baseUrl: "https://gitea.example",
-      defaultOwner: "upstream",
-      defaultRepo: "repo",
-      remote: "upstream",
-    });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
+    expect(cfg).toMatchObject({ defaultOwner: "upstream", remote: "upstream" });
   });
 
   it("falls back to the origin remote when upstream is absent", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
     expect(cfg).toMatchObject({ defaultOwner: "origin", remote: "origin" });
   });
 
@@ -397,84 +381,90 @@ describe("discoverConfig", () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = git@gitea.example:owner/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
     expect(cfg).toMatchObject({ baseUrl: "https://gitea.example" });
   });
 
-  it("places [gitea \"<baseUrl>\"] token first in candidates", async () => {
+  it("places the git-config token first in candidates", async () => {
     mockFiles({
-      "/repo/.git/config": [
-        '[remote "origin"]', "\turl = https://gitea.example/owner/repo.git",
-        '[gitea "https://gitea.example"]', "\ttoken = configtok",
-      ].join("\n"),
-      "/cred": "https://oauth2:credtok@gitea.example\n",
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" }, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: "configtok", fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" } });
     expect(cfg!.candidates[0]).toMatchObject({ source: "gitea-config", secret: "configtok", schemes: ["token"] });
   });
 
-  it("places GITEA_TOKEN before credential-store entries", async () => {
+  it("places GITEA_TOKEN before the git credential candidate", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
-      "/cred": "https://oauth2:credtok@gitea.example\n",
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" }, credentialsPaths: ["/cred"] });
-    expect(cfg!.candidates[0]).toMatchObject({ source: "env", secret: "envtok", schemes: ["token"] });
+    mockGit({ configToken: null, fill: { username: "oauth2", password: "credtok" } });
+    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" } });
+    expect(cfg!.candidates[0]).toMatchObject({ source: "env", secret: "envtok" });
     expect(cfg!.candidates[1]).toMatchObject({ source: "credential-store", secret: "credtok" });
   });
 
-  it("yields only the env candidate when no credential-store file matches", async () => {
+  it("yields only the env candidate when git yields nothing", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" }, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" } });
     expect(cfg!.candidates).toHaveLength(1);
     expect(cfg!.candidates[0]).toMatchObject({ source: "env", secret: "envtok" });
   });
 
-  it("yields zero candidates when no source resolves", async () => {
+  it("yields zero candidates and gitAvailable=true when no source resolves", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
     });
-    const cfg = await discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
     expect(cfg!.candidates).toEqual([]);
+    expect(cfg!.gitAvailable).toBe(true);
+  });
+
+  it("reports gitAvailable=false when the git binary cannot be spawned", async () => {
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
+    });
+    mockGit({ configUnavailable: true, fillUnavailable: true });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
+    expect(cfg!.candidates).toEqual([]);
+    expect(cfg!.gitAvailable).toBe(false);
+  });
+
+  it("keeps the env candidate when git is unavailable (env-only fallback)", async () => {
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
+    });
+    mockGit({ configUnavailable: true, fillUnavailable: true });
+    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_TOKEN: "envtok" } });
+    expect(cfg!.candidates).toEqual([
+      expect.objectContaining({ source: "env", secret: "envtok" }),
+    ]);
+    expect(cfg!.gitAvailable).toBe(false);
   });
 
   it("lets GITEA_BASE_URL override the derived baseUrl", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://internal.example/owner/repo.git\n',
     });
-    const cfg = await discoverConfig({
-      cwd: "/repo",
-      env: { GITEA_BASE_URL: "https://gitea.override.example" },
-      credentialsPaths: ["/cred"],
-    });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: { GITEA_BASE_URL: "https://gitea.override.example" } });
     expect(cfg).toMatchObject({ baseUrl: "https://gitea.override.example" });
-    // owner/repo still derived from the selected remote
     expect(cfg).toMatchObject({ defaultOwner: "owner", defaultRepo: "repo" });
-  });
-
-  it("uses GITEA_BASE_URL host to look up a credential when no remote is present", async () => {
-    mockFiles({
-      "/cred": "https://oauth2:credmatch@gitea.example\n",
-    });
-    const cfg = await discoverConfig({
-      cwd: "/repo",
-      env: { GITEA_BASE_URL: "https://gitea.example" },
-      credentialsPaths: ["/cred"],
-    });
-    expect(cfg).toMatchObject({ baseUrl: "https://gitea.example" });
-    expect(cfg!.candidates[0]).toMatchObject({ source: "credential-store", secret: "credmatch" });
   });
 
   it("lets GITEA_DEFAULT_OWNER/REPO override the derived values", async () => {
     mockFiles({
       "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/owner/repo.git\n',
     });
+    mockGit({ configToken: null, fill: null });
     const cfg = await discoverConfig({
       cwd: "/repo",
       env: { GITEA_DEFAULT_OWNER: "myorg", GITEA_DEFAULT_REPO: "myrepo" },
-      credentialsPaths: ["/cred"],
     });
     expect(cfg).toMatchObject({ defaultOwner: "myorg", defaultRepo: "myrepo" });
   });
@@ -485,27 +475,18 @@ describe("discoverConfig", () => {
       err.code = "EACCES";
       throw err;
     });
-    await expect(discoverConfig({ cwd: "/repo", env: {}, credentialsPaths: ["/cred"] })).rejects.toThrow("EACCES");
+    await expect(discoverConfig({ cwd: "/repo", env: {} })).rejects.toThrow("EACCES");
   });
 });
 
 describe("discoverCredentialsForHost", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("collects config token, env token, and credential-store entries in priority order", async () => {
-    mockFiles({
-      "/repo/.git/config": [
-        '[gitea "https://gitea.example"]', "\ttoken = configtok",
-      ].join("\n"),
-      "/cred": "https://oauth2:credtok@gitea.example\n",
-    });
-    const candidates = await discoverCredentialsForHost({
+  it("collects git-config token, env token, and the git credential in priority order", async () => {
+    mockFiles({});
+    mockGit({ configToken: "configtok", fill: { username: "oauth2", password: "credtok" } });
+    const { candidates } = await discoverCredentialsForHost({
       baseUrl: "https://gitea.example",
       cwd: "/repo",
       env: { GITEA_TOKEN: "envtok" },
-      credentialsPaths: ["/cred"],
     });
     expect(candidates).toHaveLength(3);
     expect(candidates[0]).toMatchObject({ source: "gitea-config", secret: "configtok" });
@@ -513,82 +494,237 @@ describe("discoverCredentialsForHost", () => {
     expect(candidates[2]).toMatchObject({ source: "credential-store", secret: "credtok" });
   });
 
-  it("filters credential-store entries strictly by username when provided", async () => {
-    mockFiles({
-      "/cred": "https://alice:secret1@gitea.example\nhttps://bob:secret2@gitea.example\n",
-    });
-    const candidates = await discoverCredentialsForHost({
+  it("reads the config token via git config get --url=<baseUrl>", async () => {
+    mockFiles({});
+    mockGit({ configToken: "configtok", fill: null });
+    await discoverCredentialsForHost({ baseUrl: "https://gitea.example", cwd: "/repo", env: {} });
+    expect(execCalls[0].args).toEqual(["config", "get", "--url=https://gitea.example", "gitea.token"]);
+  });
+
+  it("feeds protocol/host/path to git credential fill on stdin", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "alice", password: "s" } });
+    await discoverCredentialsForHost({
       baseUrl: "https://gitea.example",
+      cwd: "/repo",
       env: {},
-      credentialsPaths: ["/cred"],
+      repoPath: "owner/repo",
+    });
+    const fillCall = execCalls.find((c) => c.args[0] === "credential")!;
+    expect(fillCall.args).toEqual(["credential", "fill"]);
+    expect(fillCall.stdin).toContain("protocol=https\n");
+    expect(fillCall.stdin).toContain("host=gitea.example\n");
+    expect(fillCall.stdin).toContain("path=owner/repo\n");
+    expect(fillCall.stdin!.endsWith("\n\n"));
+  });
+
+  it("feeds username to git credential fill and filters the returned identity strictly", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "alice", password: "s1" } });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
       username: "bob",
     });
-    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
-    expect(storeCandidates).toHaveLength(1);
-    expect(storeCandidates[0]).toMatchObject({ secret: "secret2", username: "bob" });
+    const fillCall = execCalls.find((c) => c.args[0] === "credential")!;
+    expect(fillCall.stdin).toContain("username=bob\n");
+    // git returned alice although bob was asked — strict filter drops it.
+    expect(candidates.filter((c) => c.source === "credential-store")).toHaveLength(0);
   });
 
-  it("returns zero credential-store candidates when username matches nothing", async () => {
-    mockFiles({
-      "/cred": "https://alice:secret1@gitea.example\nhttps://bob:secret2@gitea.example\n",
-    });
-    const candidates = await discoverCredentialsForHost({
-      baseUrl: "https://gitea.example",
-      env: {},
-      credentialsPaths: ["/cred"],
-      username: "nobody",
-    });
-    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
-    expect(storeCandidates).toHaveLength(0);
-  });
-
-  it("collects all host-matching entries when username is undefined", async () => {
-    mockFiles({
-      "/cred": "https://alice:s1@gitea.example\nhttps://bob:s2@gitea.example\n",
-    });
-    const candidates = await discoverCredentialsForHost({
-      baseUrl: "https://gitea.example",
-      env: {},
-      credentialsPaths: ["/cred"],
-    });
-    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
-    expect(storeCandidates).toHaveLength(2);
-  });
-
-  it("still returns env token when host is unparseable", async () => {
+  it("keeps the candidate when the returned username matches the filter", async () => {
     mockFiles({});
-    const candidates = await discoverCredentialsForHost({
+    mockGit({ configToken: null, fill: { username: "bob", password: "s2" } });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+      username: "bob",
+    });
+    expect(candidates).toEqual([
+      expect.objectContaining({ source: "credential-store", secret: "s2", username: "bob" }),
+    ]);
+  });
+
+  it("maps a password-only fill result to a basic-auth candidate with no username", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { password: "pwonly" } });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates).toEqual([
+      expect.objectContaining({ source: "credential-store", secret: "pwonly", username: undefined }),
+    ]);
+  });
+
+  it("maps a username-only fill result (token stored as the username) to a token-first candidate", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "token-as-username" } });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates).toEqual([
+      expect.objectContaining({ source: "credential-store", secret: "token-as-username", schemes: ["token", "basic"] }),
+    ]);
+  });
+
+  it("still returns env token when the baseUrl is unparseable", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
       baseUrl: "not-a-url",
+      cwd: "/repo",
       env: { GITEA_TOKEN: "envtok" },
-      credentialsPaths: ["/cred"],
     });
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({ source: "env", secret: "envtok" });
+    // No git call was even attempted — availability stays unknown-but-usable.
+    expect(gitAvailable).toBe(true);
   });
 
-  it("returns an empty array when no source yields a candidate", async () => {
+  it("returns an empty array when git reports no credential (non-zero exit)", async () => {
     mockFiles({});
-    const candidates = await discoverCredentialsForHost({
+    mockGit({ configToken: null, fill: null });
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
       baseUrl: "https://gitea.example",
+      cwd: "/repo",
       env: {},
-      credentialsPaths: ["/cred"],
     });
     expect(candidates).toEqual([]);
+    expect(gitAvailable).toBe(true);
   });
 
-  it("uses repoPath for specificity scoring", async () => {
-    mockFiles({
-      "/cred": "https://oauth2:s1@gitea.example\nhttps://oauth2:s2@gitea.example/owner/repo\n",
-    });
-    const candidates = await discoverCredentialsForHost({
+  it("classifies a spawn failure as git-unavailable (env-only, no crash)", async () => {
+    mockFiles({});
+    mockGit({ configUnavailable: true, fillUnavailable: true });
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
       baseUrl: "https://gitea.example",
-      env: {},
-      credentialsPaths: ["/cred"],
-      repoPath: "owner/repo",
+      cwd: "/repo",
+      env: { GITEA_TOKEN: "envtok" },
     });
-    // The repo-path-specific entry (s2) should come before the host-only entry (s1)
-    const storeCandidates = candidates.filter((c) => c.source === "credential-store");
-    expect(storeCandidates[0]).toMatchObject({ secret: "s2" });
-    expect(storeCandidates[1]).toMatchObject({ secret: "s1" });
+    expect(candidates).toEqual([expect.objectContaining({ source: "env" })]);
+    expect(gitAvailable).toBe(false);
+  });
+
+  it("classifies a timeout kill as git-unavailable, not a credential miss", async () => {
+    mockFiles({});
+    mockExec(() => ({ code: "timeout" }));
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates).toEqual([]);
+    expect(gitAvailable).toBe(false);
+  });
+
+  it("forces non-interactive git (GIT_TERMINAL_PROMPT=0) in the subprocess env", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverCredentialsForHost({ baseUrl: "https://gitea.example", cwd: "/repo", env: {} });
+    const opts = vi.mocked(execFile).mock.calls[0][2] as { env: Record<string, string> };
+    expect(opts.env.GIT_TERMINAL_PROMPT).toBe("0");
+  });
+
+  it("rejects a repoPath containing a newline (stdin attribute-line injection)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "victim", password: "stolen" } });
+    // A forged `host=` line must never reach the credential description —
+    // otherwise fill would return the credential stored for that host.
+    await expect(
+      discoverCredentialsForHost({
+        baseUrl: "https://attacker.example",
+        cwd: "/repo",
+        env: {},
+        repoPath: "x\nhost=github.com\n",
+      }),
+    ).rejects.toThrow("line breaks are not allowed");
+    expect(execCalls.filter((c) => c.args[0] === "credential")).toHaveLength(0);
+  });
+
+  it("rejects a username containing a newline (stdin attribute-line injection)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "victim", password: "stolen" } });
+    await expect(
+      discoverCredentialsForHost({
+        baseUrl: "https://attacker.example",
+        cwd: "/repo",
+        env: {},
+        username: "x\r\nhost=github.com",
+      }),
+    ).rejects.toThrow("line breaks are not allowed");
+    expect(execCalls.filter((c) => c.args[0] === "credential")).toHaveLength(0);
+  });
+
+  it("yields no config-token candidate when git exits 0 with empty output", async () => {
+    mockFiles({});
+    // e.g. an empty `gitea.token` value: git succeeds but prints nothing.
+    mockGit({ configToken: "", fill: null });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates.filter((c) => c.source === "gitea-config")).toHaveLength(0);
+  });
+
+  it("defaults cwd/env to the process when omitted", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverCredentialsForHost({ baseUrl: "https://gitea.example" });
+    const opts = vi.mocked(execFile).mock.calls[0][2] as {
+      cwd: string;
+      env: Record<string, string>;
+    };
+    expect(opts.cwd).toBe(process.cwd());
+    // env falls back to process.env (plus the forced non-interactive flag).
+    expect(opts.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(opts.env.PATH).toBe(process.env.PATH);
+  });
+
+  it("discoverConfig also defaults cwd/env when called with no options", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig();
+    // discoverConfig() with no args reads the conventional .git/config path
+    // of the real cwd (mocked ENOENT → no remotes) and no env baseUrl —
+    // the documented "start unconfigured" outcome, without cwd/env provided.
+    expect(cfg).toBeNull();
+    expect(vi.mocked(execFile)).not.toHaveBeenCalled();
+  });
+
+  it("omits the path attribute when no remote was selected (env baseUrl only)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverConfig({ cwd: "/repo", env: { GITEA_BASE_URL: "https://gitea.example" } });
+    const fillCall = execCalls.find((c) => c.args[0] === "credential")!;
+    expect(fillCall.stdin).not.toContain("path=");
+  });
+
+  it("tolerates an undefined stdout from execFile (defensive empty-string fallback)", async () => {
+    mockFiles({});
+    // execFile may hand back undefined stdout in exotic paths; execGit must
+    // not crash and must treat it as empty (no candidate, git still usable).
+    vi.mocked(execFile).mockImplementation(((
+      _cmd: string,
+      _args: unknown,
+      _opts: unknown,
+      callback: (err: null, stdout?: string) => void,
+    ) => {
+      queueMicrotask(() => callback(null, undefined));
+      return fakeChildFor();
+    }) as never);
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(gitAvailable).toBe(true);
+    expect(candidates).toEqual([]);
   });
 });

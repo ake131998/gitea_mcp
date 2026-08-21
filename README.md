@@ -23,7 +23,7 @@ The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](ht
 
 - **Full Gitea project management** — issues, labels, milestones, comments, and topics via natural language
 - **Zero-config auto-discovery** — reads `baseUrl`, `owner`, `repo`, and token from the project's git config; one global install serves many repos
-- **Multi-source auth with failover** — tries `[gitea]` config tokens, `GITEA_TOKEN`, then the git credential store, advancing automatically on `401`/`403`
+- **Multi-source auth with failover** — tries `[gitea]` config tokens, `GITEA_TOKEN`, then git's own credential machinery (`git credential fill` — store file or OS keychain), advancing automatically on `401`/`403`
 - **Action-scoped skills** — ships one skill per workflow (find, create, label, comment, plan milestones, …) for opencode, Claude Code, Cursor, and more
 - **Client-agnostic** — works with any stdio-based MCP client; ships guidance prompts and on-demand reference resources too
 
@@ -43,8 +43,9 @@ The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](ht
 ## Requirements
 
 - **Node.js ≥ 24** — uses the global `fetch`
+- **git ≥ 2.46** on `PATH` — used for credential discovery (`git config get` / `git credential fill`; `git credential fill` also honors every configured credential helper, including OS keychains). When git cannot be used at all, discovery falls back to `GITEA_TOKEN`-only / anonymous mode — `gitea_status` reports `gitAvailable: false`. On git < 2.46, the `.git/config [gitea]` token source silently fails (exit codes are indistinguishable); credential helpers and `GITEA_TOKEN` still work.
 - A **Gitea instance** (self-hosted or Gitea Cloud) reachable over HTTP
-- A **Gitea API token** (or a git credential-store entry) for anything beyond reading public repositories
+- A **Gitea API token** (or a git credential) for anything beyond reading public repositories
 
 ## Installation
 
@@ -89,7 +90,7 @@ projects. Set them only to override the discovery.
 | Variable | Required | Description |
 |----------|:--------:|-------------|
 | `GITEA_BASE_URL` | No | Gitea instance URL (e.g. `https://gitea.example.com`). Auto-detected from the project's git remote when omitted. |
-| `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after a `.git/config [gitea]` token and before the git credential store (see [Token discovery](#token-discovery)). |
+| `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after a `.git/config [gitea]` token and before git's credential machinery (see [Token discovery](#token-discovery)). |
 | `GITEA_DEFAULT_OWNER` | No | Default repository owner — skip passing `owner` on every call |
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
 | `GITEA_UPLOAD_ROOT` | No | Root directory that attachment uploads (`create_issue_attachment` / `create_issue_comment_attachment`) may read from. Defaults to the server's working directory; the resolved path must stay inside this root. |
@@ -114,25 +115,30 @@ Gitea repository, or set `GITEA_BASE_URL` / `GITEA_TOKEN` explicitly.
 ### Token discovery
 
 `gitea-mcp` collects authentication **candidates** from three sources, in this
-priority order:
+priority order — and asks git itself for the stored ones, so every credential
+helper you have configured works (including OS keychains: `wincred`,
+`osxkeychain`, `libsecret`):
 
 1. A `[gitea "<baseUrl>"]` section in `.git/config` (a bare `[gitea]` section is
-   a host-wide fallback):
+   a host-wide fallback), read via `git config get --url=<baseUrl> gitea.token`:
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    Always sent as `Authorization: token <token>`.
 2. The `GITEA_TOKEN` environment variable — also sent as `Authorization: token`.
-3. The git credential store (`~/.git-credentials`, or
-   `$XDG_CONFIG_HOME/git/credentials`) — every line whose host matches the
-   instance, e.g. `https://alice:s3cret@gitea.example.com`. When several lines
-   match, the one whose path best matches `owner/repo` is tried first.
+   When the `git` binary is not usable at runtime, this is the only remaining
+   token source.
+3. The credential git itself would use for the instance host, retrieved via
+   `git credential fill` (config chain + credential helpers — the store file,
+   OS keychains, or any helper you configured). With several identities stored
+   for the host, git picks the one it would use; `configure_gitea`'s `username`
+   narrows the lookup to that identity.
 
-A credential-store entry's `password` field may hold a real PAT, an account
-password, or an OAuth token — git stores whatever was typed at the prompt, and
-the server cannot tell them apart statically. So each credential-store entry is
-tried under **two authentication schemes**:
+A git credential's `password` field may hold a real PAT, an account password,
+or an OAuth token — git stores whatever was typed at the prompt, and the server
+cannot tell them apart statically. So the credential is tried under **two
+authentication schemes**:
 
 - `Authorization: Basic <base64(user:pass)>` — works for account passwords and
   PATs alike (Gitea checks that the username matches the secret's owner).

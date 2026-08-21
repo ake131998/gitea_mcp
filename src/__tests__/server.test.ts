@@ -352,6 +352,24 @@ describe("tool handlers", () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed).toMatchObject({ configured: true, baseUrl: "https://g", totalCandidates: 1 });
     expect(parsed).toMatchObject({ owner: "owner", repo: "repo" });
+    // gitAvailable stays absent when unknown (e.g. server started before the
+    // issue #79 discovery rework surfaced it) — no misleading guidance.
+    expect(parsed).not.toHaveProperty("gitAvailable");
+  });
+
+  it("gitea_status surfaces gitAvailable=false with env-only fallback guidance", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: true,
+      baseUrl: "https://g",
+      candidates: [],
+      activeIndex: null,
+      totalCandidates: 0,
+    });
+    const server = await createServer("https://g", undefined, "o", "r", undefined, false);
+    const result = await registeredTools(server as never)["gitea_status"].handler({});
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed).toMatchObject({ gitAvailable: false });
   });
 
   it("list_topics returns JSON of the client result", async () => {
@@ -911,9 +929,12 @@ describe("configure_gitea tool", () => {
   });
 
   it("triggers credential re-discovery when base_url is provided", async () => {
-    const discover = vi.fn().mockResolvedValue([
-      { source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
-    ]);
+    const discover = vi.fn().mockResolvedValue({
+      candidates: [
+        { source: "env", secret: "tok", schemes: ["token"], status: "pending", nextSchemeIndex: 0 },
+      ],
+      gitAvailable: true,
+    });
     const { createServer } = await import("../server.js");
     const server = await createServer(undefined, undefined, undefined, undefined, { discoverCredentials: discover });
     mockClient.getBaseUrl.mockReturnValue(null);
@@ -933,7 +954,7 @@ describe("configure_gitea tool", () => {
   });
 
   it("triggers re-discovery when username is provided (refresh idiom)", async () => {
-    const discover = vi.fn().mockResolvedValue([]);
+    const discover = vi.fn().mockResolvedValue({ candidates: [], gitAvailable: true });
     const { createServer } = await import("../server.js");
     const server = await createServer("https://g.example", undefined, "o", "r", { discoverCredentials: discover });
     mockClient.getBaseUrl.mockReturnValue("https://g.example");
@@ -1276,5 +1297,50 @@ describe("attachment upload confinement (Issue #76)", () => {
     expect((err as Error).message).not.toContain("EACCES");
     expect((err as Error).message).not.toContain(locked);
     await chmod(locked, 0o644).catch(() => {});
+  });
+});
+
+describe("runServer (gitAvailable plumbing, issue #79)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockClient = {};
+    for (const m of CLIENT_METHODS) mockClient[m] = vi.fn();
+    vi.mocked(GiteaClient).mockImplementation(function () { return mockClient; } as never);
+    mockClient.getCredentialStatus.mockReturnValue({
+      configured: false, baseUrl: null, candidates: [], activeIndex: null, totalCandidates: 0,
+    });
+    // The real createServer wires McpServer; its internal transport is
+    // irrelevant here — runServer's contract is just "build the server with
+    // the same args and connect it over stdio". McpServer.connect is stubbed
+    // per-instance below to capture the transport without touching the
+    // process's real stdin/stdout (owned by the test runner).
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    vi.spyOn(McpServer.prototype, "connect").mockResolvedValue(undefined);
+  });
+
+  it("runs and surfaces gitAvailable=false passed through runServer", async () => {
+    const { runServer } = await import("../server.js");
+    await runServer("https://g.example", undefined, "o", "r", undefined, false);
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    // runServer built a server and connected it over stdio exactly once.
+    expect(McpServer.prototype.connect).toHaveBeenCalledTimes(1);
+    const transport = vi.mocked(McpServer.prototype.connect).mock.calls[0][0];
+    expect(transport?.constructor?.name).toBe("StdioServerTransport");
+    // gitAvailable=false reached the session: the connected server's
+    // gitea_status handler reports it.
+    const connected = vi.mocked(McpServer.prototype.connect).mock.instances[0] as never;
+    const statusResult = await registeredTools(connected)["gitea_status"].handler({});
+    expect(JSON.parse(statusResult.content[0].text)).toMatchObject({ gitAvailable: false });
+  });
+
+  it("runs without gitAvailable and omits the field from gitea_status", async () => {
+    const { runServer } = await import("../server.js");
+    await runServer("https://g.example");
+    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    expect(McpServer.prototype.connect).toHaveBeenCalledTimes(1);
+    const connected = vi.mocked(McpServer.prototype.connect).mock.instances[0] as never;
+    const statusResult = await registeredTools(connected)["gitea_status"].handler({});
+    const parsed = JSON.parse(statusResult.content[0].text);
+    expect(parsed).not.toHaveProperty("gitAvailable");
   });
 });

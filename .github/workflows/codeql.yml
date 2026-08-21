@@ -36,9 +36,12 @@ jobs:
           queries: security-extended,security-and-quality
           # AlertSuppression makes `// codeql[rule-id]` comments take effect:
           # the default suites do not run it, so inline suppressions would be
-          # ignored (the `js/file-access-to-http` suppressions at the doRequest
-          # fetch sink are intentional and documented in docs/architecture.md
-          # §5.3 — without this pack they silently do nothing).
+          # ignored (the remaining `js/file-access-to-http` suppression at the
+          # doRequest multipart fetch sink is intentional and documented in
+          # docs/architecture.md §5.3 — without this pack it silently does
+          # nothing). The credential-flow suppressions were removed with the
+          # flow itself in issue #79 (credential retrieval now goes through
+          # git subprocesses, so there is no file-read source to suppress).
           packs: codeql/javascript-queries:AlertSuppression.ql
 
       - name: Autobuild

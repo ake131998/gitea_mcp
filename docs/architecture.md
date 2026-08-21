@@ -27,7 +27,7 @@ requests against the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.2
                                                                               └──────────────────────┘
         ▲
         │ env (all optional overrides): GITEA_BASE_URL, GITEA_TOKEN, GITEA_DEFAULT_OWNER, GITEA_DEFAULT_REPO
-   cli.ts (process entry) ──► git-config.ts (discoverConfig: .git/config + credential store + env)
+   cli.ts (process entry) ──► git-config.ts (discoverConfig: .git/config remotes + git credential machinery + env)
                                   └─► credentials.ts (candidate state machine: pure functions)
 ```
 
@@ -91,15 +91,16 @@ scripts/
 | `src/index.ts` | The package `main` entry. Re-exports `createServer` and `runServer` from `server.ts` so `import "@amonstack/gitea-mcp"` works for programmatic use. Defines nothing of its own. |
 | `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` to resolve the Gitea instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
 | `src/credentials.ts` | Pure credential candidate state machine — types (`CandidateCredential`, `CredentialDiscoveryResult`, `AuthScheme`) and transition functions (`pickNextAttempt`, `markAttemptFailed`, `markAttemptSucceeded`, `buildAuthHeader`, `orderSchemesForCredentialStore`, `summarizeCandidates`). No I/O, no MCP, no HTTP — a pure leaf both `git-config.ts` (candidate construction) and `gitea-client.ts` (request-time iteration) depend on. |
-| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`), resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list: `[gitea "<baseUrl>"] token` in `.git/config` → `GITEA_TOKEN` env → git credential store entries (`~/.git-credentials` / XDG), host-matched and path-narrowed. Each credential-store candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env,credentialsPaths})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?}`) or `null` when no instance can be found. Also exports `discoverCredentialsForHost({baseUrl, cwd?, env?, credentialsPaths?, username?, repoPath?})` for runtime re-discovery against an explicit host (used by the `configure_gitea` tool), with strict `username` filtering of credential-store entries. No MCP/HTTP logic; reads files but swallows only `ENOENT` (rethrows other errors). |
-| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests). |
+| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`) via file reads, resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list through git's own machinery: `[gitea "<baseUrl>"] token` via `git config get --url=<baseUrl> gitea.token` → `GITEA_TOKEN` env → the credential git would use via `git credential fill` (config chain + credential helpers — the OS-keychain support the in-process parser never had). The secret therefore enters the process via subprocess stdout, not a `node:fs` read — this removed the CodeQL `js/file-access-to-http` file-read source (issue #79). Each credential candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?, gitAvailable?}`) or `null` when no instance can be found; `gitAvailable:false` means the git binary could not be used (env-token / anonymous fallback). Also exports `discoverCredentialsForHost({baseUrl, cwd?, env?, username?, repoPath?})` for runtime re-discovery against an explicit host (used by the `configure_gitea` tool), with strict `username` narrowing. No MCP/HTTP logic; file reads swallow only `ENOENT` (rethrow other errors), git subprocess non-zero exits map to "no value" (the ENOENT analogue) and spawn failures / timeouts to `gitAvailable:false`. |
+| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests, and a 6th `gitAvailable?: boolean` seeds the session's git-availability flag for `gitea_status`). |
 | `src/tools.ts` | Exports one Zod schema per tool input. The set of schemas stays 1:1 with the tools registered in `server.ts` and the tool tables in `README.md`. |
 | `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, and all HTTP methods. Contains no MCP/stdio logic. |
 | `src/skills.ts` | The `gitea-mcp init --tool <name>` implementation: carries the registry of supported target tools and, for the chosen tool, copies every bundled skill (each subdirectory of `dist/assets/skills/` containing a `SKILL.md`) into that tool's skills directory, one folder per skill. No MCP/HTTP logic; no Gitea credentials required. |
 | `src/assets/**` | Markdown guidance content (instructions, resources, the action skills). Pure data, read at runtime; copied into `dist/assets/` by `scripts/copy-assets.mjs` so it ships with the published package. |
 
-`cli.ts` is a thin shell; `git-config.ts` is a discovery leaf (file reads only)
-that builds candidates via `credentials.ts`; `credentials.ts` is a pure leaf
+`cli.ts` is a thin shell; `git-config.ts` is a discovery leaf (file reads for
+remotes + git subprocesses for secrets) that builds candidates via
+`credentials.ts`; `credentials.ts` is a pure leaf
 (types + transition functions, no I/O); `server.ts` is the composition root;
 `tools.ts` is pure schema declarations; `gitea-client.ts` is HTTP + the
 request-time candidate iteration. Mixing concerns across these files is a
@@ -117,7 +118,11 @@ cli.ts
   └─► skills.ts          (runInitCommand — only the `gitea-mcp init` subcommand)
 git-config.ts
   ├─► credentials.ts     (CandidateCredential types, orderSchemesForCredentialStore)
-  └─► node:fs/promises, node:os, node:path  (reads .git/config + credential store; env)
+  ├─► node:child_process (execFile — `git config get --url=... gitea.token`,
+  │    `git credential fill`; secret retrieval via git's own machinery, so the
+  │    credential never passes through a `node:fs` read of a secret-bearing file)
+  └─► node:fs/promises, node:path  (reads `.git`/`config` for the remote
+       listing — non-secret content; env)
 credentials.ts
   └─► (none — pure leaf: types + state-machine transition functions)
 server.ts
@@ -139,8 +144,9 @@ skills.ts
 Rules implied by the graph:
 
 - `credentials.ts`, `tools.ts` are pure leaves — they import none of the other
-  project files. `git-config.ts` is a discovery leaf (file reads + env) that
-  imports `credentials.ts` for candidate construction.
+  project files. `git-config.ts` is a discovery leaf (file reads for remotes +
+  git subprocesses for secrets + env) that imports `credentials.ts` for
+  candidate construction.
 - `gitea-client.ts` imports `credentials.ts` (the state-machine functions) but
   no other project file — it stays pure HTTP + candidate iteration.
 - `server.ts` is the composition root: the only file that imports both
@@ -218,15 +224,21 @@ credential behavior is a small state machine over a `CandidateCredential[]`
 
 - **Candidates** are built at startup by `discoverConfig()` (or rebuilt at runtime
   by `discoverCredentialsForHost()` when `configure_gitea` triggers re-discovery),
-  in priority order: `[gitea "<baseUrl>"]` token → `GITEA_TOKEN` env → git
-  credential-store entries (host-matched, path-narrowed). Config/env candidates
-  carry only the `token` scheme; credential-store candidates carry both `basic`
-  and `token`, ordered by a username heuristic (real username → `basic` first;
-  convention username like `oauth2` → `token` first). When `configure_gitea`
-  provides new candidates, `client.configure()` replaces the entire list with
-  defensive copies whose state machine is fully reset (all back to `pending`) —
-  this prevents an old host's active candidate from sending its old token to a
-  new host.
+  in priority order: `[gitea "<baseUrl>"]` token (via `git config get
+  --url=<baseUrl> gitea.token`, which also falls back to the bare `[gitea]`
+  section natively) → `GITEA_TOKEN` env → the credential git itself would use
+  for the host (`git credential fill` — config chain + every configured
+  credential helper, including OS keychains; with `username` provided the
+  lookup is narrowed to that identity and strictly filtered on the returned
+  username). Config/env candidates carry only the `token` scheme;
+  credential candidates carry both `basic` and `token`, ordered by a username
+  heuristic (real username → `basic` first; convention username like `oauth2`
+  → `token` first). When the git binary cannot be used, only the env source
+  remains and `gitea_status` reports `gitAvailable: false` as fix guidance.
+  When `configure_gitea` provides new candidates, `client.configure()` replaces
+  the entire list with defensive copies whose state machine is fully reset
+  (all back to `pending`) — this prevents an old host's active candidate from
+  sending its old token to a new host.
 - **Per request**, if a candidate is already `active` its locked scheme is
   reused with no probing. Otherwise `pickNextAttempt` walks candidate × scheme
   in priority order; the chosen `{candidate, scheme}` becomes an
@@ -249,22 +261,22 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   output (see AGENTS.md §4 Secret Handling). The `gitea_status` diagnostic tool
   surfaces a redacted view via `getCredentialStatus()` → `summarizeCandidates()`
   (`secretPresent: boolean`, masked username `firstChar***`).
-- **CodeQL `js/file-access-to-http` mitigation:** two designed file → HTTP
-  data flows reach the `doRequest` fetch sink, and each carries its OWN
-  justified line-scoped suppression where the taint enters the request —
-  neither suppression covers the other's flow, and the rule stays globally
-  enabled: (1) the credential flow — the `Authorization` header (and the
-  `init` object carrying it) holds file-derived credentials, the point of the
-  discovery + state-machine pipeline; (2) the attachment-upload flow —
-  multipart `FormData` bodies carry a local file's bytes, and the upload
-  source was hardened FIRST per issue #76: `readUploadFile` in `server.ts`
-  confines it (realpath upload-root confinement, sensitive-location
-  deny-list, extension allow-list, size cap, path-free generic errors)
-  before the bytes ever reach the client. The rule stayed active while the
-  source was unconfined (PR #75's blanket extension of the credential
-  suppression to this flow was the reported defect); with the hardening in
-  place the per-line suppression is justified and documented at the sink
-  (see the `doRequest` doc comment in `gitea-client.ts`).
+- **CodeQL `js/file-access-to-http` mitigation:** one designed file → HTTP
+  data flow reaches the `doRequest` fetch sink, and it carries a justified
+  line-scoped suppression where the taint enters the request — the rule stays
+  globally enabled: the attachment-upload flow — multipart `FormData` bodies
+  carry a local file's bytes, and the upload source was hardened FIRST per
+  issue #76: `readUploadFile` in `server.ts` confines it (realpath upload-root
+  confinement, sensitive-location deny-list, extension allow-list, size cap,
+  path-free generic errors) before the bytes ever reach the client; the alert
+  is dismissed once on GitHub with a recorded reason (#79), and a CI guard
+  fails on any NEW open alert of this rule (`.github/workflows/codeql-guard.yml`).
+  The former credential flow (alert #8) no longer exists as a file-read flow:
+  since #79, credential retrieval goes through git's own machinery
+  (`git config get --url=...` / `git credential fill`), so the secret enters
+  via subprocess stdout, which the query's `FileSystemReadAccess` source does
+  not match — no suppression needed, and the rule keeps guarding the rest of
+  the codebase against genuine backdoor injection.
 
 `GiteaApiError extends Error` with typed `{status, statusText, body}` fields so
 callers can branch on `err.status === 401` without substring-matching the
@@ -327,17 +339,20 @@ handshake instructions and the tool cookbook.
 | Variable | Required | Consumer | Purpose |
 |----------|:--------:|----------|---------|
 | `GITEA_BASE_URL` | No | `cli.ts` → `GiteaClient` | Gitea instance origin (e.g. `https://gitea.example.com`). When unset, auto-detected from the selected git remote's host. |
-| `GITEA_TOKEN` | No | `cli.ts` → `GiteaClient` | API access token. One of several auth candidates, tried after a `.git/config [gitea]` token and before the git credential store; always sent as `Authorization: token`. If no candidate resolves, the server starts anonymously and write calls fail `401/403` — the `gitea_status` tool and `gitea-configure` skill guide the user to add one. |
+| `GITEA_TOKEN` | No | `cli.ts` → `GiteaClient` | API access token. One of several auth candidates, tried after a `.git/config [gitea]` token and before git's credential machinery; always sent as `Authorization: token`. When git is unavailable this is the only token source. If no candidate resolves, the server starts anonymously and write calls fail `401/403` — the `gitea_status` tool and `gitea-configure` skill guide the user to add one. |
 | `GITEA_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default repository owner so `owner` can be omitted per call; defaults to the selected remote's owner. |
 | `GITEA_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default repository name so `repo` can be omitted per call; defaults to the selected remote's repo. |
 | `GITEA_UPLOAD_ROOT` | No | `server.ts` (`readUploadFile`) | Root directory attachment uploads may read from. Defaults to the server's working directory; the realpath-resolved `file_path` must stay inside this root. |
 | `NPM_TOKEN` | No (publish only) | `make publish` | npm publish token; never read at runtime |
 
-All four `GITEA_*` variables are optional overrides; none is validated as
+All five `GITEA_*` variables are optional overrides; none is validated as
 required. `cli.ts` calls `discoverConfig()` (`git-config.ts`) to resolve the
-instance URL, build the credential candidate list from `<cwd>/.git/config`
-remotes plus the git credential store (and the env vars), and derive default
-owner/repo. When no instance can be resolved (no git remote and no
+instance URL, build the credential candidate list from the selected git remote
+plus git's own credential machinery (and the env vars), and derive default
+owner/repo. Credential discovery needs the `git` binary at runtime (git ≥ 2.46
+for `git config get`); when git cannot be used, discovery degrades to
+`GITEA_TOKEN`-only / anonymous mode and `gitea_status` reports
+`gitAvailable: false`. When no instance can be resolved (no git remote and no
 `GITEA_BASE_URL`), `cli.ts` prints a one-line notice to stderr and starts the
 server in an **unconfigured** state — business tools throw `NotConfiguredError`,
 while `tools/list`, `resolve_repo`, `gitea_status`, and `configure_gitea` remain

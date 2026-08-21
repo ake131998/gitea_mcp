@@ -77,7 +77,7 @@ import {
   GetProjectSchema,
 } from "./tools.js";
 import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost } from "./git-config.js";
-import type { DiscoverCredentialsForHostOptions } from "./git-config.js";
+import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
 import { readFile, realpath, open } from "node:fs/promises";
@@ -241,12 +241,12 @@ async function readUploadFile(filePath: string): Promise<{ data: Uint8Array<Arra
 /**
  * Optional dependency-injection point for hermetic unit tests. When `discoverCredentials`
  * is provided, the `configure_gitea` tool calls it instead of the real `discoverCredentialsForHost`,
- * so tests can exercise credential re-discovery without touching the filesystem.
+ * so tests can exercise credential re-discovery without spawning git.
  */
 export interface ServerDeps {
   discoverCredentials?: (
     options: DiscoverCredentialsForHostOptions,
-  ) => Promise<CandidateCredential[]>;
+  ) => Promise<DiscoverCredentialsForHostResult>;
 }
 
 export async function createServer(
@@ -255,6 +255,7 @@ export async function createServer(
   defaultOwner?: string,
   defaultRepo?: string,
   deps?: ServerDeps,
+  gitAvailable?: boolean,
 ) {
   const client = baseUrl
     ? Array.isArray(candidates)
@@ -267,6 +268,8 @@ export async function createServer(
     defaultOwner,
     defaultRepo,
     username: undefined as string | undefined,
+    /** Whether git could be used for credential discovery (fix guidance for gitea_status). */
+    gitAvailable,
   };
 
   const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -1519,7 +1522,7 @@ export async function createServer(
     "configure_gitea",
     {
       description:
-        "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (.git/config [gitea] section, GITEA_TOKEN env, git credential store). Tokens never pass through this tool; they are always read from the local credential sources. username strictly filters credential-store entries by exact match (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+        "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitea] token, GITEA_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
       inputSchema: ConfigureGiteaSchema.shape,
     },
     async (input) => {
@@ -1550,11 +1553,13 @@ export async function createServer(
           session.defaultOwner && session.defaultRepo
             ? `${session.defaultOwner}/${session.defaultRepo}`
             : undefined;
-        newCandidates = await discover({
+        const discovered = await discover({
           baseUrl: targetBaseUrl,
           username: input.username ?? session.username,
           repoPath,
         });
+        newCandidates = discovered.candidates;
+        session.gitAvailable = discovered.gitAvailable;
       }
 
       // 3) client.configure({ baseUrl, candidates }) — atomic replacement.
@@ -1596,7 +1601,7 @@ export async function createServer(
     "gitea_status",
     {
       description:
-        "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
+        "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITEA_TOKEN env or anonymous mode remain: install git or set GITEA_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
       inputSchema: GiteaStatusSchema.shape,
     },
     async () => {
@@ -1608,6 +1613,7 @@ export async function createServer(
             text: JSON.stringify(
               {
                 ...status,
+                ...(session.gitAvailable !== undefined ? { gitAvailable: session.gitAvailable } : {}),
                 owner: session.defaultOwner,
                 repo: session.defaultRepo,
                 username: session.username,
@@ -1919,8 +1925,9 @@ export async function runServer(
   defaultOwner?: string,
   defaultRepo?: string,
   deps?: ServerDeps,
+  gitAvailable?: boolean,
 ) {
-  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps);
+  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps, gitAvailable);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
