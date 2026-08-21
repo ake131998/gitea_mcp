@@ -551,4 +551,71 @@ describe("discoverCredentialsForHost", () => {
     ).rejects.toThrow("line breaks are not allowed");
     expect(execCalls.filter((c) => c.args[0] === "credential")).toHaveLength(0);
   });
+
+  it("yields no config-token candidate when git exits 0 with empty output", async () => {
+    mockFiles({});
+    // e.g. an empty `gitea.token` value: git succeeds but prints nothing.
+    mockGit({ configToken: "", fill: null });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates.filter((c) => c.source === "gitea-config")).toHaveLength(0);
+  });
+
+  it("defaults cwd/env to the process when omitted", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverCredentialsForHost({ baseUrl: "https://gitea.example" });
+    const opts = vi.mocked(execFile).mock.calls[0][2] as {
+      cwd: string;
+      env: Record<string, string>;
+    };
+    expect(opts.cwd).toBe(process.cwd());
+    // env falls back to process.env (plus the forced non-interactive flag).
+    expect(opts.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(opts.env.PATH).toBe(process.env.PATH);
+  });
+
+  it("discoverConfig also defaults cwd/env when called with no options", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig();
+    // discoverConfig() with no args reads the conventional .git/config path
+    // of the real cwd (mocked ENOENT → no remotes) and no env baseUrl —
+    // the documented "start unconfigured" outcome, without cwd/env provided.
+    expect(cfg).toBeNull();
+    expect(vi.mocked(execFile)).not.toHaveBeenCalled();
+  });
+
+  it("omits the path attribute when no remote was selected (env baseUrl only)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverConfig({ cwd: "/repo", env: { GITEA_BASE_URL: "https://gitea.example" } });
+    const fillCall = execCalls.find((c) => c.args[0] === "credential")!;
+    expect(fillCall.stdin).not.toContain("path=");
+  });
+
+  it("tolerates an undefined stdout from execFile (defensive empty-string fallback)", async () => {
+    mockFiles({});
+    // execFile may hand back undefined stdout in exotic paths; execGit must
+    // not crash and must treat it as empty (no candidate, git still usable).
+    vi.mocked(execFile).mockImplementation(((
+      _cmd: string,
+      _args: unknown,
+      _opts: unknown,
+      callback: (err: null, stdout?: string) => void,
+    ) => {
+      queueMicrotask(() => callback(null, undefined));
+      return fakeChildFor();
+    }) as never);
+    const { candidates, gitAvailable } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(gitAvailable).toBe(true);
+    expect(candidates).toEqual([]);
+  });
 });
