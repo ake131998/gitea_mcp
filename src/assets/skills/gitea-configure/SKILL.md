@@ -55,7 +55,10 @@ repo / with env vars set.
    `label`, `milestone` (read+write). NEVER have the user paste a token into chat unless they
    explicitly choose to — prefer having them run a git command themselves.
 3. Have the user store it so discovery finds it. Recommend, in priority order:
-   - `git config --file=.git/config gitea."<baseUrl>".token "<token>"` (project-scoped), or
+   - `git config --file=.git/config gitea.<baseUrl>.token "<token>"` (project-scoped;
+     write the `<baseUrl>` WITHOUT quotes around it in the key — quoting the
+     subsection creates a literal `"https://…"` section name that discovery
+     can never match), or
    - store it as a git credential (any configured helper — e.g.
      `git credential approve`, or an OS-keychain helper), or
    - export `GITEA_TOKEN` (and `GITEA_BASE_URL`) in their MCP client config.

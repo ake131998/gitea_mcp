@@ -120,13 +120,45 @@ beforeEach(() => {
 
 describe("parseGitRemoteUrl", () => {
   it("parses scp-like SSH with .git suffix", () => {
-    const r = parseGitRemoteUrl("git@gitea.example:owner/repo.git");
-    expect(r).toMatchObject({ host: "gitea.example", baseUrl: "https://gitea.example", owner: "owner", repo: "repo" });
+    expect(parseGitRemoteUrl("git@gitea.example:owner/repo.git", "origin")).toEqual({
+      remote: "origin",
+      url: "git@gitea.example:owner/repo.git",
+      host: "gitea.example",
+      baseUrl: "https://gitea.example",
+      owner: "owner",
+      repo: "repo",
+    });
+  });
+
+  it("parses scp-like SSH without .git suffix", () => {
+    const r = parseGitRemoteUrl("git@gitea.example:owner/repo");
+    expect(r).toMatchObject({ host: "gitea.example", owner: "owner", repo: "repo", baseUrl: "https://gitea.example" });
   });
 
   it("parses ssh:// protocol", () => {
-    const r = parseGitRemoteUrl("ssh://git@gitea.example/owner/repo");
+    expect(parseGitRemoteUrl("ssh://git@gitea.example/owner/repo.git", "upstream")).toMatchObject({
+      remote: "upstream", host: "gitea.example", baseUrl: "https://gitea.example", owner: "owner", repo: "repo",
+    });
+  });
+
+  it("parses ssh:// with a port (port dropped from baseUrl)", () => {
+    const r = parseGitRemoteUrl("ssh://git@gitea.example:2222/owner/repo.git");
+    expect(r).toMatchObject({ host: "gitea.example", baseUrl: "https://gitea.example" });
+  });
+
+  it("parses ssh:// without a user", () => {
+    const r = parseGitRemoteUrl("ssh://gitea.example/owner/repo.git");
     expect(r).toMatchObject({ host: "gitea.example", owner: "owner", repo: "repo" });
+  });
+
+  it("parses HTTPS with .git suffix", () => {
+    const r = parseGitRemoteUrl("https://gitea.example/owner/repo.git");
+    expect(r).toMatchObject({ host: "gitea.example", baseUrl: "https://gitea.example", owner: "owner", repo: "repo" });
+  });
+
+  it("parses HTTPS without .git suffix", () => {
+    const r = parseGitRemoteUrl("https://gitea.example/owner/repo");
+    expect(r).toMatchObject({ owner: "owner", repo: "repo", baseUrl: "https://gitea.example" });
   });
 
   it("parses HTTPS with a non-standard port (port kept in baseUrl and host)", () => {
@@ -135,60 +167,107 @@ describe("parseGitRemoteUrl", () => {
   });
 
   it("parses HTTPS with userinfo (userinfo ignored)", () => {
-    const r = parseGitRemoteUrl("https://user:pass@gitea.example/owner/repo");
-    expect(r).toMatchObject({ owner: "owner", repo: "repo" });
+    const r = parseGitRemoteUrl("https://user:pass@gitea.example/owner/repo.git");
+    expect(r).toMatchObject({ host: "gitea.example", owner: "owner", repo: "repo" });
+  });
+
+  it("parses HTTP", () => {
+    const r = parseGitRemoteUrl("http://gitea.example/owner/repo.git");
+    expect(r).toMatchObject({ baseUrl: "http://gitea.example", host: "gitea.example" });
+  });
+
+  it("defaults the remote name to origin", () => {
+    expect(parseGitRemoteUrl("git@gitea.example:owner/repo.git")!.remote).toBe("origin");
   });
 
   it("strips unsafe characters from owner and repo segments", () => {
-    const r = parseGitRemoteUrl("https://gitea.example/o..w-n_r/e.git");
-    expect(r).toMatchObject({ owner: "o..w-n_r", repo: "e" });
+    const r = parseGitRemoteUrl("https://gitea.example/o!wn/re^po.git");
+    expect(r).toMatchObject({ owner: "own", repo: "repo" });
   });
 
   it("returns null when owner segment has no safe characters", () => {
-    expect(parseGitRemoteUrl("https://gitea.example/!!/repo")).toBeNull();
+    expect(parseGitRemoteUrl("https://gitea.example/!!!/repo.git")).toBeNull();
   });
 
   it("returns null for an unparseable url", () => {
-    expect(parseGitRemoteUrl("not a url")).toBeNull();
+    expect(parseGitRemoteUrl("not-a-valid-url")).toBeNull();
+  });
+
+  it("returns null when only host is given (no owner/repo)", () => {
+    expect(parseGitRemoteUrl("https://gitea.example")).toBeNull();
+  });
+
+  it("trims surrounding whitespace before parsing", () => {
+    const r = parseGitRemoteUrl("  git@gitea.example:owner/repo.git  ");
+    expect(r).toMatchObject({ owner: "owner", repo: "repo" });
   });
 });
 
 describe("readGitRemotes", () => {
   it("extracts multiple remotes with their urls", () => {
-    const remotes = readGitRemotes('[remote "origin"]\n\turl = https://g/o/r.git\n[remote "upstream"]\n\turl = https://g/u/r.git\n');
-    expect(remotes).toEqual([
-      { name: "origin", url: "https://g/o/r.git" },
-      { name: "upstream", url: "https://g/u/r.git" },
+    const content = [
+      '[remote "origin"]',
+      "\turl = https://gitea.example/origin/repo.git",
+      "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+      '[remote "upstream"]',
+      "\turl = git@gitea.example:upstream/repo.git",
+    ].join("\n");
+    expect(readGitRemotes(content)).toEqual([
+      { name: "origin", url: "https://gitea.example/origin/repo.git" },
+      { name: "upstream", url: "git@gitea.example:upstream/repo.git" },
     ]);
   });
 
+  it("takes the first url of a remote and ignores fetch/other keys", () => {
+    const content = '[remote "origin"]\n\turl = https://h/o/r.git\n\turl = https://h/o2/r.git\n';
+    expect(readGitRemotes(content)).toEqual([{ name: "origin", url: "https://h/o/r.git" }]);
+  });
+
   it("stops collecting keys when a new non-remote section begins", () => {
-    const remotes = readGitRemotes('[remote "origin"]\nurl = https://g/o/r.git\n[gitea]\ntoken = x\n');
-    expect(remotes).toEqual([{ name: "origin", url: "https://g/o/r.git" }]);
+    const content = [
+      '[remote "origin"]',
+      "\turl = https://h/o/r.git",
+      '[branch "main"]',
+      "\turl = should-not-be-collected",
+    ].join("\n");
+    expect(readGitRemotes(content)).toEqual([{ name: "origin", url: "https://h/o/r.git" }]);
   });
 
   it("returns an empty array when there are no remotes", () => {
     expect(readGitRemotes("")).toEqual([]);
+    expect(readGitRemotes('[core]\n\trepositoryformatversion = 0\n')).toEqual([]);
   });
 });
 
 describe("parseRemotes", () => {
   it("parses valid remotes and drops unparseable ones", () => {
-    const remotes = parseRemotes('[remote "origin"]\nurl = https://g/o/r.git\n[remote "bad"]\nurl = ???\n');
-    expect(remotes).toHaveLength(1);
-    expect(remotes[0]).toMatchObject({ remote: "origin" });
+    const content = [
+      '[remote "origin"]',
+      "\turl = https://gitea.example/owner/repo.git",
+      '[remote "broken"]',
+      "\turl = not-a-url",
+    ].join("\n");
+    const r = parseRemotes(content);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ remote: "origin", owner: "owner" });
   });
 });
 
 describe("selectRemote", () => {
-  const mk = (name: string) => ({ remote: name, url: "", host: "h", baseUrl: "https://h", owner: "o", repo: "r" });
+  const mk = (remote: string, owner = "o") => ({
+    remote, owner, url: `https://h/${owner}/r`, host: "h", baseUrl: "https://h", repo: "r",
+  });
 
   it("prefers upstream over origin", () => {
     expect(selectRemote([mk("origin"), mk("upstream")])!.remote).toBe("upstream");
   });
 
+  it("falls back to origin when no upstream", () => {
+    expect(selectRemote([mk("origin"), mk("fork")])!.remote).toBe("origin");
+  });
+
   it("falls back to the first remote when neither upstream nor origin", () => {
-    expect(selectRemote([mk("a"), mk("b")])!.remote).toBe("a");
+    expect(selectRemote([mk("fork1"), mk("fork2")])!.remote).toBe("fork1");
   });
 
   it("returns null for an empty list", () => {
@@ -212,14 +291,35 @@ describe("resolveGitConfigPath", () => {
       "/wt/.git": "gitdir: /data/repo/.git/worktrees/wt\n",
       "/data/repo/.git/worktrees/wt/commondir": "../..\n",
     });
-    expect(await resolveGitConfigPath("/wt")).toBe("/data/repo/.git/config");
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/data/repo/.git/config");
+  });
+
+  it("follows an absolute commondir to the shared config", async () => {
+    mockFiles({
+      "/wt/.git": "gitdir: /private/wt\n",
+      "/private/wt/commondir": "/data/repo/.git\n",
+    });
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/data/repo/.git/config");
   });
 
   it("reads config directly from the gitdir when no commondir exists (submodule)", async () => {
     mockFiles({
-      "/wt/.git": "gitdir: /data/sub/.git\n",
+      "/sub/.git": "gitdir: /data/repo/.git/modules/sub\n",
     });
-    expect(await resolveGitConfigPath("/wt")).toBe("/data/sub/.git/config");
+    await expect(resolveGitConfigPath("/sub")).resolves.toBe("/data/repo/.git/modules/sub/config");
+  });
+
+  it("resolves a relative gitdir pointer against the cwd", async () => {
+    mockFiles({
+      "/work/sub/.git": "gitdir: ../.git/worktrees/sub\n",
+      "/work/.git/worktrees/sub/commondir": "../..\n",
+    });
+    await expect(resolveGitConfigPath("/work/sub")).resolves.toBe("/work/.git/config");
+  });
+
+  it("falls back to the conventional path when the .git file has no gitdir line", async () => {
+    mockFiles({ "/wt/.git": "garbage\n" });
+    await expect(resolveGitConfigPath("/wt")).resolves.toBe("/wt/.git/config");
   });
 
   it("rethrows non-ENOENT/EISDIR filesystem errors", async () => {
@@ -266,6 +366,15 @@ describe("discoverConfig", () => {
     mockGit({ configToken: null, fill: null });
     const cfg = await discoverConfig({ cwd: "/repo", env: {} });
     expect(cfg).toMatchObject({ defaultOwner: "upstream", remote: "upstream" });
+  });
+
+  it("falls back to the origin remote when upstream is absent", async () => {
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n',
+    });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({ cwd: "/repo", env: {} });
+    expect(cfg).toMatchObject({ defaultOwner: "origin", remote: "origin" });
   });
 
   it("derives an https baseUrl from an SSH remote", async () => {
