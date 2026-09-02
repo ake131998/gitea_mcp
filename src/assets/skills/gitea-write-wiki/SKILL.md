@@ -1,9 +1,13 @@
 ---
 name: gitea-write-wiki
-description: Invoke to WRITE / CREATE / EDIT / RESTRUCTURE pages in a Gitea repository wiki. Applies the bundled OSS wiki format spec (page model, naming, Markdown style, templates) so pages look like mainstream open-source documentation. Do NOT invoke to delete a page (no skill — destructive; use delete_wiki_page only after explicit user confirmation), or to work on issues/PRs/Actions.
+description: "Invoke to WRITE / CREATE / EDIT / RESTRUCTURE pages in a Gitea repository wiki. Applies the bundled OSS wiki format spec (page model, naming, Markdown style, templates) so pages look like mainstream open-source documentation. When to use: write, create, edit, or restructure wiki pages or repo documentation; 中文触发：编写/创建/修改/整理 wiki 页面、仓库文档. Do NOT invoke to delete a page (no skill — destructive; use delete_wiki_page only after explicit user confirmation), or to work on issues/PRs/Actions."
 ---
 
 # gitea-write-wiki
+
+## When to use
+
+Trigger when the user asks to **write / create / edit / restructure wiki pages or docs** — 中文请求如「写个 wiki 页面」「整理一下仓库文档」「把首页改一下」也 MUST 走本 skill。
 
 Create or edit wiki pages following mainstream open-source conventions (Gitea/GitHub wiki model + GitLab-derived Markdown style). Tools: `list_wiki_pages`, `get_wiki_page`, `create_wiki_page`, `update_wiki_page`, `list_wiki_revisions`.
 

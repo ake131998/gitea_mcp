@@ -1,9 +1,13 @@
 ---
 name: gitea-find-issues
-description: Invoke to DISCOVER or READ Gitea issues — listing one repo's issues, cross-repo keyword search, reading a single issue, or triage. Do NOT invoke to create/edit/close/delete (gitea-create-issue / gitea-update-issue), to manage labels (gitea-label-issue), or to read the comment discussion (gitea-summarize-issue).
+description: "Invoke to DISCOVER or READ Gitea issues — listing one repo's issues, cross-repo keyword search, reading a single issue, or triage. When to use: list, search, find, browse, or read issues in one repo or across repos; 中文触发：列出/搜索/查找/查看 issue、问题列表、工单. Do NOT invoke to edit/close (gitea-update-issue), to manage labels (gitea-label-issue), or to read the comment discussion (gitea-summarize-issue)."
 ---
 
 # gitea-find-issues
+
+## When to use
+
+Trigger when the user asks to **list / search / find / read issues** — 中文请求如「看看有哪些 issue」「搜一下关于 X 的问题」「这个 issue 讲了什么」也 MUST 走本 skill。
 
 Read-only issue discovery. Tools: `list_issues`, `search_issues`, `get_issue`.
 

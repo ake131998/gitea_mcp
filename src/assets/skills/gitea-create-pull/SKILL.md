@@ -1,9 +1,13 @@
 ---
 name: gitea-create-pull
-description: Invoke to CREATE / OPEN a new Gitea pull request. The flow confirms the branch exists and checks for an existing open PR on the same head/base first, then creates. Do NOT invoke to edit/close (gitea-update-pull), merge (gitea-merge-pull), read/find (gitea-find-pulls), or post a review comment (gitea-comment-issue).
+description: "Invoke to CREATE / OPEN a new Gitea pull request. The flow confirms the branch exists and checks for an existing open PR on the same head/base first, then creates. When to use: create or open a new pull request from a branch; 中文触发：创建/发起/提交 PR、pull request、合并请求. Do NOT invoke to edit/close (gitea-update-pull), merge (gitea-merge-pull), read/find (gitea-find-pulls), or post a review comment (gitea-comment-issue)."
 ---
 
 # gitea-create-pull
+
+## When to use
+
+Trigger when the user asks to **create / open a pull request** — 中文请求如「提个 PR」「发起合并请求」「把这个分支做成 PR」也 MUST 走本 skill：先确认分支存在且无同 head/base 的开放 PR，再创建。
 
 Open one new pull request after ruling out a duplicate. Tools: `list_pull_requests`, `create_pull_request`.
 

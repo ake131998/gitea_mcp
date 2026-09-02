@@ -1,9 +1,13 @@
 ---
 name: gitea-merge-pull
-description: Invoke to MERGE one Gitea pull request after confirming it is mergeable and the user has explicitly approved the strategy. IRREVERSIBLE. Do NOT invoke to create (gitea-create-pull), edit/close without merging (gitea-update-pull), find/read (gitea-find-pulls), or check merge status only (gitea-find-pulls get_pull_request).
+description: "Invoke to MERGE one Gitea pull request after confirming it is mergeable and the user has explicitly approved the strategy. IRREVERSIBLE. When to use: merge a pull request (merge / squash / rebase); 中文触发：合并 PR、合并请求、把分支合入主干. Do NOT invoke to create (gitea-create-pull), edit/close without merging (gitea-update-pull), find/read (gitea-find-pulls), or check merge status only (gitea-find-pulls get_pull_request)."
 ---
 
 # gitea-merge-pull
+
+## When to use
+
+Trigger when the user asks to **merge a pull request** — 中文请求如「把这个 PR 合了」「合并到 master」「squash 合入」也 MUST 走本 skill：IRREVERSIBLE，先确认 mergeable 并取得用户对策略的明确批准。
 
 Merge one pull request. IRREVERSIBLE. Tools: `get_pull_request`, `is_pull_merged`, `merge_pull_request`.
 

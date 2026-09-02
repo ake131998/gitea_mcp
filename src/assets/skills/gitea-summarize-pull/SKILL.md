@@ -1,9 +1,13 @@
 ---
 name: gitea-summarize-pull
-description: Invoke to READ and SUMMARIZE a pull request — the PR body, commits, changed files, and comment thread. Produces a review-oriented summary (what it changes, mergeability, open questions). Do NOT invoke to create/edit/merge/close a PR (gitea-create-pull / gitea-update-pull / gitea-merge-pull), or to post a comment (gitea-comment-issue).
+description: "Invoke to READ and SUMMARIZE a pull request — the PR body, commits, changed files, and comment thread. Produces a review-oriented summary (what it changes, mergeability, open questions). When to use: read and summarize a pull request for review (changes, mergeability, open questions); 中文触发：总结/梳理 PR 的改动与讨论、辅助评审. Do NOT invoke to create/edit/merge/close a PR (gitea-create-pull / gitea-update-pull / gitea-merge-pull), or to post a comment (gitea-comment-issue)."
 ---
 
 # gitea-summarize-pull
+
+## When to use
+
+Trigger when the user asks to **summarize a PR for review** — 中文请求如「总结一下这个 PR」「这个 PR 改了什么、能不能合」也 MUST 走本 skill。
 
 Read a pull request and its discussion, then synthesize. Tools: `get_pull_request`, `list_pull_commits`, `list_pull_files`, `list_comments`.
 

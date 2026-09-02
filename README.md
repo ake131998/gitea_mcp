@@ -418,7 +418,6 @@ say, delete instructions while creating). Install them with the
 | Skill | Invoke when |
 |-------|-------------|
 | `gitea-find-issues` | discovering / reading / triaging issues |
-| `gitea-create-issue` | creating an issue (after a duplicate check) |
 | `gitea-update-issue` | editing fields, closing, clearing assignee/milestone |
 | `gitea-label-issue` | adding / replacing / removing / clearing labels on an issue |
 | `gitea-manage-labels` | creating or editing label definitions |
@@ -438,8 +437,8 @@ say, delete instructions while creating). Install them with the
 | `gitea-write-wiki` | writing / editing wiki pages per the bundled OSS wiki format spec |
 
 Each skill is a short, AI-facing action flow (purpose, when to use, when not to,
-rules, and what to check first). The create, comment, and milestone skills also
-embed **body templates** (bug / feature / performance issue, comment, milestone)
+rules, and what to check first). The comment and milestone skills also
+embed **body templates** (comment, milestone)
 that standardize the format of what the assistant writes. Destructive
 single-tool actions (delete issue / comment / label / milestone) are intentionally
 left to the tool descriptions so they never contaminate a creative workflow.

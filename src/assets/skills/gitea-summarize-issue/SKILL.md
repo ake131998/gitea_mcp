@@ -1,9 +1,13 @@
 ---
 name: gitea-summarize-issue
-description: Invoke to READ and SUMMARIZE an issue's discussion — the issue body plus its comment thread. Do NOT invoke to create/edit an issue (gitea-create-issue / gitea-update-issue), post a comment (gitea-comment-issue), or manage labels/milestones.
+description: "Invoke to READ and SUMMARIZE an issue's discussion — the issue body plus its comment thread. When to use: read and summarize an issue's body and comment thread; 中文触发：总结/梳理/概括 issue 的内容与讨论、评论串. Do NOT invoke to edit an issue (gitea-update-issue), post a comment (gitea-comment-issue), or manage labels/milestones."
 ---
 
 # gitea-summarize-issue
+
+## When to use
+
+Trigger when the user asks to **summarize / digest an issue's discussion** — 中文请求如「总结一下这个 issue」「这个 issue 讨论到哪了」也 MUST 走本 skill。
 
 Read an issue and its discussion, then synthesize. Tools: `get_issue`, `list_comments`.
 

@@ -1,9 +1,13 @@
 ---
 name: gitea-update-issue
-description: Invoke to EDIT fields, CLOSE, REOPEN, or CLEAR assignee/milestone on ONE existing Gitea issue. Do NOT invoke to create (gitea-create-issue), delete (destructive — no skill), find/read (gitea-find-issues), or change a single label (gitea-label-issue).
+description: "Invoke to EDIT fields, CLOSE, REOPEN, or CLEAR assignee/milestone on ONE existing Gitea issue. When to use: edit, close, or reopen an existing issue, or set its assignee/milestone; 中文触发：编辑/修改/关闭/重开 issue，设置指派人/里程碑. Do NOT invoke to delete (destructive — no skill), find/read (gitea-find-issues), or change a single label (gitea-label-issue)."
 ---
 
 # gitea-update-issue
+
+## When to use
+
+Trigger when the user asks to **edit / close / reopen an issue, or set its assignee/milestone** — 中文请求如「关掉这个 issue」「重新打开」「把它指派给某人」「挂到 v1.2 里程碑」也 MUST 走本 skill。
 
 Edit one issue's fields or change its state. Tools: `get_issue`, `update_issue`.
 

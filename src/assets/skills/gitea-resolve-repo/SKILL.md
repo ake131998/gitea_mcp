@@ -1,9 +1,13 @@
 ---
 name: gitea-resolve-repo
-description: Invoke to RESOLVE which owner/repo (and baseUrl) the other gitea tools should target (auto-detect from a git remote) or to LIST repositories the token can access. Run FIRST when the target repository is unknown. Do NOT invoke for issue/comment/label/milestone work once owner/repo are known.
+description: "Invoke to RESOLVE which owner/repo (and baseUrl) the other gitea tools should target (auto-detect from a git remote) or to LIST repositories the token can access. Run FIRST when the target repository is unknown. When to use: determine/identify which owner/repo (and baseUrl) to target, or list accessible repositories; 中文触发：确定/识别/解析目标仓库（owner/repo）、列出可访问的仓库. Do NOT invoke for issue/comment/label/milestone work once owner/repo are known."
 ---
 
 # gitea-resolve-repo
+
+## When to use
+
+Trigger when the **target repository is unknown** or the user asks which repos the token can access — 中文请求如「该操作哪个仓库」「列出我能访问的仓库」「这个项目的 owner/repo 是什么」也 MUST 走本 skill。
 
 Discover the target repository and instance. Tools: `resolve_repo`, `list_my_repos`.
 

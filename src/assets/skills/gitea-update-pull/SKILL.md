@@ -1,9 +1,13 @@
 ---
 name: gitea-update-pull
-description: Invoke to EDIT fields, CLOSE (without merging), REOPEN, retarget, or toggle WIP on ONE existing Gitea pull request. Do NOT invoke to create (gitea-create-pull), merge (gitea-merge-pull — destructive), find/read (gitea-find-pulls), or change a single label (gitea-label-issue).
+description: "Invoke to EDIT fields, CLOSE (without merging), REOPEN, retarget, or toggle WIP on ONE existing Gitea pull request. When to use: edit, close (without merging), reopen, or retarget a pull request, or toggle WIP; 中文触发：编辑/关闭/重开 PR，修改目标分支，切换 WIP/草稿状态. Do NOT invoke to create (gitea-create-pull), merge (gitea-merge-pull — destructive), find/read (gitea-find-pulls), or change a single label (gitea-label-issue)."
 ---
 
 # gitea-update-pull
+
+## When to use
+
+Trigger when the user asks to **edit / close / reopen / retarget a PR, or toggle WIP** — 中文请求如「关掉这个 PR（不合并）」「把 PR 标成 WIP」「改下目标分支」也 MUST 走本 skill。
 
 Edit one pull request's fields or change its state. Tools: `get_pull_request`, `update_pull_request`.
 
