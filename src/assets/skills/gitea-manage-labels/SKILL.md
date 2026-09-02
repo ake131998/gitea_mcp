@@ -1,9 +1,13 @@
 ---
 name: gitea-manage-labels
-description: Invoke to CREATE or EDIT a Gitea label in the repo's taxonomy (the set of available label definitions). Do NOT invoke to attach labels to an issue (gitea-label-issue) or to delete a label (destructive — no skill).
+description: "Invoke to CREATE or EDIT a Gitea label in the repo's taxonomy (the set of available label definitions). When to use: create or edit a repo label definition (name, color, description); 中文触发：新建/修改仓库的标签定义（名称、颜色、描述）. Do NOT invoke to attach labels to an issue (gitea-label-issue) or to delete a label (destructive — no skill)."
 ---
 
 # gitea-manage-labels
+
+## When to use
+
+Trigger when the user asks to **create or edit a label definition** — 中文请求如「新建一个标签」「把这个标签的颜色/描述改掉」也 MUST 走本 skill。
 
 Create or edit the repo's label definitions. Tools: `list_labels`, `create_label`, `update_label`.
 

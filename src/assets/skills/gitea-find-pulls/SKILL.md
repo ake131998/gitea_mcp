@@ -1,9 +1,13 @@
 ---
 name: gitea-find-pulls
-description: Invoke to DISCOVER or READ Gitea pull requests — listing one repo's PRs, cross-repo PR search, reading a single PR, its commits, or its changed files. Do NOT invoke to create/edit/close/merge (gitea-create-pull / gitea-update-pull / gitea-merge-pull), or to read the comment discussion (gitea-summarize-pull).
+description: "Invoke to DISCOVER or READ Gitea pull requests — listing one repo's PRs, cross-repo PR search, reading a single PR, its commits, or its changed files. When to use: list, search, find, or read pull requests, their commits, or changed files; 中文触发：列出/搜索/查看 PR、合并请求及其提交与改动文件. Do NOT invoke to create/edit/close/merge (gitea-create-pull / gitea-update-pull / gitea-merge-pull), or to read the comment discussion (gitea-summarize-pull)."
 ---
 
 # gitea-find-pulls
+
+## When to use
+
+Trigger when the user asks to **list / search / read pull requests** — 中文请求如「看看开放的 PR」「这个 PR 改了哪些文件」「搜一下相关的合并请求」也 MUST 走本 skill。
 
 Read-only pull request discovery. Tools: `list_pull_requests`, `search_issues`, `get_pull_request`, `list_pull_commits`, `list_pull_files`.
 

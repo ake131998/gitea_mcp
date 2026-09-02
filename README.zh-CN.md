@@ -430,7 +430,6 @@ gitea-mcp
 | 技能 | 何时触发 |
 |------|----------|
 | `gitea-find-issues` | 发现 / 读取 / 分流 issues |
-| `gitea-create-issue` | 创建 issue（先做查重） |
 | `gitea-update-issue` | 编辑字段、关闭、清空负责人/里程碑 |
 | `gitea-label-issue` | 为 issue 增加 / 替换 / 移除 / 清空标签 |
 | `gitea-manage-labels` | 创建或编辑标签定义 |
@@ -450,7 +449,7 @@ gitea-mcp
 | `gitea-write-wiki` | 按内置开源 wiki 格式规范编写 / 编辑 wiki 页面 |
 
 每个技能都是面向 AI 的简短动作流程（目的、何时用、何时不用、规则、先检查什么）。
-创建、评论、里程碑三类技能还内嵌**正文模板**（bug / 新功能 / 性能 issue、评论、
+评论、里程碑两类技能还内嵌**正文模板**（评论、
 里程碑），用以规范助手所写内容的格式。破坏性的单工具操作（删除 issue / 评论 /
 标签 / 里程碑）有意仅保留在工具描述里，不会污染创建类工作流。
 

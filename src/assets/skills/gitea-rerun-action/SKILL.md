@@ -1,9 +1,13 @@
 ---
 name: gitea-rerun-action
-description: Invoke to RERUN a completed Gitea Actions workflow run — either the entire run or only its failed jobs. The flow confirms the run has completed and is rerunnable first, then reruns after user approval. Do NOT invoke to cancel (gitea-cancel-action), find/read runs (gitea-find-actions), or manage issues/pull requests.
+description: "Invoke to RERUN a completed Gitea Actions workflow run — either the entire run or only its failed jobs. The flow confirms the run has completed and is rerunnable first, then reruns after user approval. When to use: rerun or retry a completed workflow run, or only its failed jobs; 中文触发：重跑/重试已结束的 workflow、CI，或只重试失败的任务/job. Do NOT invoke to cancel (gitea-cancel-action), find/read runs (gitea-find-actions), or manage issues/pull requests."
 ---
 
 # gitea-rerun-action
+
+## When to use
+
+Trigger when the user asks to **rerun / retry a workflow run or failed CI jobs** — 中文请求如「重跑一下这个 CI」「再跑一次流水线」「只重试失败的 job」也 MUST 走本 skill：先确认运行已结束，经用户批准后再重跑。
 
 Rerun one completed Actions workflow run. Tools: `get_action_run`, `rerun_action_run`, `rerun_action_run_failed_jobs`.
 

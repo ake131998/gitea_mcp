@@ -1,9 +1,13 @@
 ---
 name: gitea-find-actions
-description: Invoke to DISCOVER or READ Gitea Actions workflow runs — listing runs in one repo (filtered by status/branch/event/actor) or reading a single run's detail. Do NOT invoke to cancel (gitea-cancel-action), rerun (gitea-rerun-action), or to manage issues/pull requests.
+description: "Invoke to DISCOVER or READ Gitea Actions workflow runs — listing runs in one repo (filtered by status/branch/event/actor) or reading a single run's detail. When to use: list, find, check, or view workflow runs / CI / pipeline status or results; 中文触发：查看/列出/查询 Actions 运行记录、workflow、流水线、CI 状态与结果. Do NOT invoke to cancel (gitea-cancel-action), rerun (gitea-rerun-action), or to manage issues/pull requests."
 ---
 
 # gitea-find-actions
+
+## When to use
+
+Trigger when the user asks to **list / check / view workflow runs or CI status** — 中文请求如「看下 CI 跑得怎么样」「列出最近的 workflow 运行」「这条流水线为什么失败」也 MUST 走本 skill。
 
 Read-only Gitea Actions workflow run discovery. Tools: `list_action_runs`, `get_action_run`.
 

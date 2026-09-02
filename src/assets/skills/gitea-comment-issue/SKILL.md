@@ -1,9 +1,13 @@
 ---
 name: gitea-comment-issue
-description: Invoke to POST a new comment on a Gitea issue or pull request. The flow confirms the issue exists first, then posts. Do NOT invoke to edit or delete a comment (author/admin only, partly destructive — no skill), read or summarize the thread (gitea-summarize-issue), or create/edit the issue itself (gitea-create-issue / gitea-update-issue).
+description: "Invoke to POST a new comment on a Gitea issue or pull request. The flow confirms the issue exists first, then posts. When to use: post, add, write, or reply with a comment on an issue or PR; 中文触发：在 issue/PR 上评论、留言、回复、补充说明. Do NOT invoke to edit or delete a comment (author/admin only, partly destructive — no skill), read or summarize the thread (gitea-summarize-issue), or edit the issue itself (gitea-update-issue)."
 ---
 
 # gitea-comment-issue
+
+## When to use
+
+Trigger when the user asks to **comment / reply / leave a note on an issue or PR** — 中文请求如「在这个 issue 下评论一下」「回复这条 PR」「补充一句说明」也 MUST 走本 skill：先确认 issue 存在再发帖。
 
 Post one new comment that advances an issue's discussion. Tools: `get_issue`, `create_comment`.
 

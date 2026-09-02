@@ -1,9 +1,13 @@
 ---
 name: gitea-cancel-action
-description: Invoke to CANCEL one active Gitea Actions workflow run. PARTIALLY DESTRUCTIVE — active jobs are killed and partial results discarded. The flow confirms the run is still active first, then cancels after user approval. Do NOT invoke to rerun (gitea-rerun-action), find/read runs (gitea-find-actions), or manage issues/pull requests.
+description: "Invoke to CANCEL one active Gitea Actions workflow run. PARTIALLY DESTRUCTIVE — active jobs are killed and partial results discarded. The flow confirms the run is still active first, then cancels after user approval. When to use: cancel, stop, or abort an active/running Actions workflow run or CI job; 中文触发：取消/中止/停止正在运行的 workflow、流水线、CI、Actions 任务. Do NOT invoke to rerun (gitea-rerun-action), find/read runs (gitea-find-actions), or manage issues/pull requests."
 ---
 
 # gitea-cancel-action
+
+## When to use
+
+Trigger when the user asks to **cancel / stop / abort a running workflow run, CI job, or pipeline** — 中文请求如「取消这次 workflow 运行」「停掉 CI」「中止流水线」也 MUST 走本 skill：先确认运行仍在进行，经用户批准后再取消。
 
 Cancel one active Actions workflow run. PARTIALLY DESTRUCTIVE. Tools: `get_action_run`, `cancel_action_run`.
 
