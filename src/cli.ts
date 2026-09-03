@@ -13,9 +13,9 @@ server over stdio and auto-discovers baseUrl, owner, repo, and credentials from
 the environment and the local git remote (.git/config).
 
 Platform selection: one process serves one platform (default: gitea).
-MCP_PLATFORM=gitlab — or any GITLAB_BASE_URL/GITLAB_TOKEN env var without a
-GITEA_* counterpart — serves GitLab instead (GITLAB_* env contract, and the
-same tool names backed by the GitLab REST API v4).
+MCP_PLATFORM=gitlab — or any GITLAB_BASE_URL/GITLAB_TOKEN/GITLAB_REPO_URL env
+var without a GITEA_* counterpart — serves GitLab instead (GITLAB_* env
+contract, and the same tool names backed by the GitLab REST API v4).
 
 Commands:
   init    Install bundled action skills into an AI tool's skills directory.
@@ -32,7 +32,8 @@ for init-specific options.
  * Resolve which platform this process serves. Explicit `MCP_PLATFORM`
  * (`gitea`|`gitlab`) wins; otherwise GitLab is auto-selected when any
  * GITLAB_* connection env var is present and no GITEA_* connection env var
- * is. The default remains `gitea` for backward compatibility.
+ * is (`*_BASE_URL`, `*_TOKEN`, `*_REPO_URL`). The default remains `gitea`
+ * for backward compatibility.
  */
 export function resolvePlatform(env: NodeJS.ProcessEnv): Platform {
   const explicit = env.MCP_PLATFORM;
@@ -42,8 +43,14 @@ export function resolvePlatform(env: NodeJS.ProcessEnv): Platform {
     }
     return explicit;
   }
-  const hasGitLab = env.GITLAB_BASE_URL !== undefined || env.GITLAB_TOKEN !== undefined;
-  const hasGitea = env.GITEA_BASE_URL !== undefined || env.GITEA_TOKEN !== undefined;
+  const hasGitLab =
+    env.GITLAB_BASE_URL !== undefined ||
+    env.GITLAB_TOKEN !== undefined ||
+    env.GITLAB_REPO_URL !== undefined;
+  const hasGitea =
+    env.GITEA_BASE_URL !== undefined ||
+    env.GITEA_TOKEN !== undefined ||
+    env.GITEA_REPO_URL !== undefined;
   return hasGitLab && !hasGitea ? "gitlab" : "gitea";
 }
 
@@ -123,8 +130,10 @@ if (head === "init") {
   const discovered = await (platform === "gitlab" ? discoverGitLabConfig() : discoverConfig()).catch(fatal);
 
   if (!discovered) {
+    const baseUrlVar = platform === "gitlab" ? "GITLAB_BASE_URL" : "GITEA_BASE_URL";
+    const repoUrlVar = platform === "gitlab" ? "GITLAB_REPO_URL" : "GITEA_REPO_URL";
     console.error(
-      `gitea-mcp: starting UNCONFIGURED — no git remote found in ${process.cwd()} and ${platform === "gitlab" ? "GITLAB_BASE_URL" : "GITEA_BASE_URL"} is not set. Use the configure_${platform} tool to configure at runtime.`,
+      `gitea-mcp: starting UNCONFIGURED — no git remote found in ${process.cwd()}, and neither ${baseUrlVar} nor ${repoUrlVar} is set. Use the configure_${platform} tool to configure at runtime.`,
     );
     if (platform === "gitlab") {
       runServer(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab", toolAllowlist).catch(fatal);

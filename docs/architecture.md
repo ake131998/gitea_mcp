@@ -26,7 +26,7 @@ requests against the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.2
 └───────────────┘              └──────────────────────────────┘               │   pull requests,…)  │
                                                                               └──────────────────────┘
         ▲
-        │ env (all optional overrides): GITEA_BASE_URL, GITEA_TOKEN, GITEA_DEFAULT_OWNER, GITEA_DEFAULT_REPO
+        │ env (all optional overrides): GITEA_BASE_URL, GITEA_REPO_URL, GITEA_TOKEN, GITEA_DEFAULT_OWNER, GITEA_DEFAULT_REPO
    cli.ts (process entry) ──► git-config.ts (discoverConfig: .git/config remotes + git credential machinery + env)
                                   └─► credentials.ts (candidate state machine: pure functions)
 ```
@@ -97,9 +97,9 @@ scripts/
 | File | Responsibility (invariant) |
 |------|----------------------------|
 | `src/index.ts` | The package `main` entry. Re-exports `createServer` and `runServer` from `server.ts` so `import "@amonstack/gitea-mcp"` works for programmatic use. Defines nothing of its own. |
-| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` (or `discoverGitLabConfig()` in GitLab mode — selected by `MCP_PLATFORM` / the `GITLAB_*`-vs-`GITEA_*` env mix, see `resolvePlatform`) to resolve the instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`, alongside the `MCP_TOOL_ALLOWLIST` list parsed by `resolveToolAllowlist` (unset or blank means the gate is off). With no git remote and no `GITEA_BASE_URL` / `GITLAB_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` / `configure_gitlab` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
+| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` (or `discoverGitLabConfig()` in GitLab mode — selected by `MCP_PLATFORM` / the `GITLAB_*`-vs-`GITEA_*` env mix, see `resolvePlatform`) to resolve the instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`, alongside the `MCP_TOOL_ALLOWLIST` list parsed by `resolveToolAllowlist` (unset or blank means the gate is off). With no git remote and no `GITEA_BASE_URL` / `GITEA_REPO_URL` / `GITLAB_BASE_URL` / `GITLAB_REPO_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` / `configure_gitlab` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
 | `src/credentials.ts` | Pure credential candidate state machine — types (`CandidateCredential`, `CredentialDiscoveryResult`, `AuthScheme`) and transition functions (`pickNextAttempt`, `markAttemptFailed`, `markAttemptSucceeded`, `buildAuthHeader`, `orderSchemesForCredentialStore`, `summarizeCandidates`). No I/O, no MCP, no HTTP — a pure leaf both `git-config.ts` (candidate construction) and `gitea-client.ts` (request-time iteration) depend on. |
-| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`) via file reads, resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list through git's own machinery: `[gitea "<baseUrl>"] token` / `[gitlab "<baseUrl>"] token` via `git config get --url=<baseUrl> <section>.token` → `GITEA_TOKEN` / `GITLAB_TOKEN` env → the credential git would use via `git credential fill` (config chain + credential helpers — the OS-keychain support the in-process parser never had). The secret therefore enters the process via subprocess stdout, not a `node:fs` read — this removed the CodeQL `js/file-access-to-http` file-read source (issue #79). Platform knobs (config section, env var, source tag, scheme set) are parametrized so the Gitea pipeline (`discoverConfig` / `discoverCredentialsForHost`, `token`/`basic` schemes) and the GitLab pipeline (`discoverGitLabConfig` / `discoverGitLabCredentialsForHost`, `bearer` only) share the machinery but never each other's credential sources. Each credential candidate gets its scheme order from `credentials.ts`. Exports `discoverConfig({cwd,env})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?, gitAvailable?}`) or `null` when no instance can be found; `gitAvailable:false` means the git binary could not be used (env-token / anonymous fallback). Also exports the host-scoped re-discovery functions used by the `configure_gitea` / `configure_gitlab` tools, with strict `username` narrowing. No MCP/HTTP logic; file reads swallow only `ENOENT` (rethrow other errors), git subprocess non-zero exits map to "no value" (the ENOENT analogue) and spawn failures / timeouts to `gitAvailable:false`. |
+| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`) via file reads, resolves the instance URL (SSH remote → `https://<host>`), parses the `GITEA_REPO_URL` / `GITLAB_REPO_URL` self-contained credentialed repo URL (`parseRepoUrl` — userinfo decoded and stripped from the derived baseUrl; `stripUrlUserInfo` redacts echoed remote URLs), and builds the ordered candidate list through git's own machinery: the repo URL's userinfo (host-matched) → `[gitea "<baseUrl>"] token` / `[gitlab "<baseUrl>"] token` via `git config get --url=<baseUrl> <section>.token` → `GITEA_TOKEN` / `GITLAB_TOKEN` env → the credential git would use via `git credential fill` (config chain + credential helpers — the OS-keychain support the in-process parser never had). The secret therefore enters the process via subprocess stdout or an explicitly provided env URL, not a `node:fs` read — this removed the CodeQL `js/file-access-to-http` file-read source (issue #79). Platform knobs (config section, env vars, source tag, scheme set) are parametrized so the Gitea pipeline (`discoverConfig` / `discoverCredentialsForHost`, `token`/`basic` schemes) and the GitLab pipeline (`discoverGitLabConfig` / `discoverGitLabCredentialsForHost`, `bearer` only) share the machinery but never each other's credential sources. Each credential candidate gets its scheme order from `credentials.ts`. Exports `discoverConfig({cwd,env})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?, gitAvailable?}`) or `null` when no instance can be found; `gitAvailable:false` means the git binary could not be used (env-source / anonymous fallback). Also exports the host-scoped re-discovery functions used by the `configure_gitea` / `configure_gitlab` tools, with strict `username` narrowing. No MCP/HTTP logic; file reads swallow only `ENOENT` (rethrow other errors), git subprocess non-zero exits map to "no value" (the ENOENT analogue) and spawn failures / timeouts to `gitAvailable:false`. |
 | `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md` (or `assets/instructions-gitlab.md` in GitLab mode). The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` / `gitlab_status` tool delegates to the active client's `getCredentialStatus()`; the `configure_gitea` / `configure_gitlab` tool composes runtime configuration (calls the platform's host-scoped discovery for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests, a 6th `gitAvailable?: boolean` seeds the session's git-availability flag, a 7th `platform` selects the backing client, and an 8th `toolAllowlist` gates the tool surface at startup — non-whitelisted tools are `disable()`d on their `RegisteredTool` handles so the SDK hides them from `tools/list` and rejects their `tools/call`, while an entry naming no tool on the active platform aborts startup with an error). The three Gitea guide resources are registered on the Gitea platform only. |
 | `src/tools.ts` | Exports one Zod schema per tool input. The set of schemas stays 1:1 with the tools registered in `server.ts` and the tool tables in `README.md`. |
 | `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, the shared API params/response type definitions, and all HTTP methods. Contains no MCP/stdio logic. |
@@ -213,11 +213,16 @@ contributes the default `owner` / `repo`, and its host becomes the Gitea
 instance base URL (an SSH remote like `git@host:owner/repo.git` is mapped to
 `https://<host>`). `GITEA_BASE_URL`, `GITEA_DEFAULT_OWNER`, and
 `GITEA_DEFAULT_REPO` are **optional overrides** that win over the git-derived
-values. With no git remote and no `GITEA_BASE_URL`, `cli.ts` prints a one-line
-notice and starts the server in an **unconfigured** state — business tools throw
-`NotConfiguredError` on invocation, while `tools/list`, `resolve_repo`,
-`gitea_status`, and `configure_gitea` remain usable. The `configure_gitea` tool
-enables session-scoped runtime configuration (see §5.5).
+values. `GITEA_REPO_URL` — one self-contained credentialed clone URL
+(`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`, parsed by
+`parseRepoUrl`) — tiers between them and the git remote: each of its parts
+(baseUrl, owner, repo) applies only when the matching explicit override is
+unset, and its userinfo becomes the top-priority credential candidate (§5.3).
+With no git remote and neither `GITEA_BASE_URL` nor `GITEA_REPO_URL`, `cli.ts`
+prints a one-line notice and starts the server in an **unconfigured** state —
+business tools throw `NotConfiguredError` on invocation, while `tools/list`,
+`resolve_repo`, `gitea_status`, and `configure_gitea` remain usable. The
+`configure_gitea` tool enables session-scoped runtime configuration (see §5.5).
 
 `resolve()` in `server.ts` then applies a per-call fallback so individual tool
 invocations can still omit `owner` / `repo`:
@@ -233,7 +238,9 @@ The `resolve_repo` tool offers an explicit re-detection path: it parses ALL
 remotes (via `git-config.ts`'s `parseRemotes` + `selectRemote`) and returns
 `{ baseUrl, owner, repo, remote, remote_url, remotes: { <name>: { baseUrl,
 owner, repo, url } } }` so the caller can see both `upstream` and `origin` at
-once. It throws `No parseable git remotes found in <path>` when none parse.
+once. Echoed remote URLs carry no userinfo — `stripUrlUserInfo` removes any
+embedded `user:token@` credentials so a credentialed remote never leaks its
+secret. It throws `No parseable git remotes found in <path>` when none parse.
 
 ### 5.3 HTTP via `request<T>` and the credential state machine
 
@@ -243,17 +250,20 @@ credential behavior is a small state machine over a `CandidateCredential[]`
 
 - **Candidates** are built at startup by `discoverConfig()` (or rebuilt at runtime
   by `discoverCredentialsForHost()` when `configure_gitea` triggers re-discovery),
-  in priority order: `[gitea "<baseUrl>"]` token (via `git config get
-  --url=<baseUrl> gitea.token`, which also falls back to the bare `[gitea]`
-  section natively) → `GITEA_TOKEN` env → the credential git itself would use
-  for the host (`git credential fill` — config chain + every configured
-  credential helper, including OS keychains; with `username` provided the
-  lookup is narrowed to that identity and strictly filtered on the returned
-  username). Config/env candidates carry only the `token` scheme;
-  credential candidates carry both `basic` and `token`, ordered by a username
-  heuristic (real username → `basic` first; convention username like `oauth2`
-  → `token` first). When the git binary cannot be used, only the env source
-  remains and `gitea_status` reports `gitAvailable: false` as fix guidance.
+  in priority order: the `GITEA_REPO_URL` repo URL's userinfo (collected only
+  when the URL's host matches the host being discovered for, so its secret is
+  never attempted against another instance) → `[gitea "<baseUrl>"]` token (via
+  `git config get --url=<baseUrl> gitea.token`, which also falls back to the
+  bare `[gitea]` section natively) → `GITEA_TOKEN` env → the credential git
+  itself would use for the host (`git credential fill` — config chain + every
+  configured credential helper, including OS keychains; with `username`
+  provided the lookup is narrowed to that identity and strictly filtered on
+  the returned username). Config/env candidates carry only the `token` scheme;
+  credential-store and repo-URL candidates carry both `basic` and `token`,
+  ordered by a username heuristic (real username → `basic` first; convention
+  username like `oauth2` → `token` first). When the git binary cannot be used,
+  only the env sources (`GITEA_REPO_URL` / `GITEA_TOKEN`) remain and
+  `gitea_status` reports `gitAvailable: false` as fix guidance.
   When `configure_gitea` provides new candidates, `client.configure()` replaces
   the entire list with defensive copies whose state machine is fully reset
   (all back to `pending`) — this prevents an old host's active candidate from
@@ -364,8 +374,9 @@ trailing `platform` parameter (`"gitea" | "gitlab"`, default `"gitea"`), and
 `cli.ts` resolves it via `resolvePlatform(process.env)`:
 
 1. `MCP_PLATFORM=gitlab` (or `gitea`) wins; an invalid value exits `1`;
-2. otherwise GitLab is auto-selected when `GITLAB_BASE_URL` or `GITLAB_TOKEN`
-   is set and no `GITEA_*` connection variable is;
+2. otherwise GitLab is auto-selected when any of `GITLAB_BASE_URL`,
+   `GITLAB_TOKEN`, or `GITLAB_REPO_URL` is set and no `GITEA_*` connection
+   variable is;
 3. the default remains `gitea`, so existing configurations are unchanged.
 
 Consequences of the one-platform-per-process rule:
@@ -409,27 +420,31 @@ the same candidate × scheme retry loop over `401`/`403`, atomic
 | Variable | Required | Consumer | Purpose |
 |----------|:--------:|----------|---------|
 | `GITEA_BASE_URL` | No | `cli.ts` → `GiteaClient` | Gitea instance origin (e.g. `https://gitea.example.com`). When unset, auto-detected from the selected git remote's host. |
-| `GITEA_TOKEN` | No | `cli.ts` → `GiteaClient` | API access token. One of several auth candidates, tried after a `.git/config [gitea]` token and before git's credential machinery; always sent as `Authorization: token`. When git is unavailable this is the only token source. If no candidate resolves, the server starts anonymously and write calls fail `401/403` — the `gitea_status` tool and `gitea-configure` skill guide the user to add one. |
+| `GITEA_TOKEN` | No | `cli.ts` → `GiteaClient` | API access token. One of several auth candidates, tried after the `GITEA_REPO_URL` userinfo and a `.git/config [gitea]` token, and before git's credential machinery; always sent as `Authorization: token`. When git is unavailable the env sources are the only candidates. If no candidate resolves, the server starts anonymously and write calls fail `401/403` — the `gitea_status` tool and `gitea-configure` skill guide the user to add one. |
+| `GITEA_REPO_URL` | No | `cli.ts` → `git-config.ts` (`parseRepoUrl`) → `GiteaClient` | One self-contained credentialed clone URL (`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`). Supplies baseUrl, default owner/repo, and the top-priority credential candidate; each part sits below the matching scalar override and above the git remote. Parsed in-memory (works with `gitAvailable: false`); the userinfo is stripped from the derived baseUrl, and the raw URL is never echoed (`resolve_repo` strips userinfo too). A malformed value is ignored, not fatal. |
 | `GITEA_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default repository owner so `owner` can be omitted per call; defaults to the selected remote's owner. |
 | `GITEA_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default repository name so `repo` can be omitted per call; defaults to the selected remote's repo. |
 | `GITEA_UPLOAD_ROOT` | No | `server.ts` (`readUploadFile`) | Root directory attachment uploads may read from. Defaults to the server's working directory; the realpath-resolved `file_path` must stay inside this root. |
 | `MCP_PLATFORM` | No | `cli.ts` (`resolvePlatform`) | Platform selection: `gitea` (default) or `gitlab`. Wins over the `GITLAB_*`-presence auto-detection; an invalid value exits `1`. |
 | `MCP_TOOL_ALLOWLIST` | No | `cli.ts` (`resolveToolAllowlist`) → `server.ts` (registration gate) | Startup tool allowlist: comma-separated `snake_case` tool names (trimmed, matched exactly against the registered names of the active platform). Unset or empty keeps every tool available; a non-whitelisted tool disappears from `tools/list` and its `tools/call` returns a tool-level error without executing; an entry naming no tool on the active platform exits `1`. |
 | `GITLAB_BASE_URL` | No | `cli.ts` → `GitLabClient` | GitLab instance origin (e.g. `https://gitlab.example.com`). When unset, auto-detected from the selected git remote's host. Its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
-| `GITLAB_TOKEN` | No | `cli.ts` → `GitLabClient` | GitLab API access token. Tried after a `.git/config [gitlab]` token and before git's credential machinery; always sent as `Authorization: Bearer`. When git is unavailable this is the only token source. |
+| `GITLAB_TOKEN` | No | `cli.ts` → `GitLabClient` | GitLab API access token. Tried after the `GITLAB_REPO_URL` userinfo and a `.git/config [gitlab]` token, and before git's credential machinery; always sent as `Authorization: Bearer`. When git is unavailable the env sources are the only candidates. |
+| `GITLAB_REPO_URL` | No | `cli.ts` → `git-config.ts` (`parseRepoUrl`) → `GitLabClient` | GitLab counterpart of `GITEA_REPO_URL`; its candidate is `Bearer`-only. Its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
 | `GITLAB_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default project owner (GitLab mode) so `owner` can be omitted per call; defaults to the selected remote's owner. |
 | `GITLAB_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default project name (GitLab mode) so `repo` can be omitted per call; defaults to the selected remote's repo. |
 | `NPM_TOKEN` | No (publish only) | `make publish` | npm publish token; never read at runtime |
 
-All five `GITEA_*` variables are optional overrides; none is validated as
+All six `GITEA_*` variables are optional overrides; none is validated as
 required. `cli.ts` calls `discoverConfig()` (`git-config.ts`) to resolve the
 instance URL, build the credential candidate list from the selected git remote
 plus git's own credential machinery (and the env vars), and derive default
 owner/repo. Credential discovery needs the `git` binary at runtime (git ≥ 2.46
-for `git config get`); when git cannot be used, discovery degrades to
-`GITEA_TOKEN`-only / anonymous mode and `gitea_status` reports
-`gitAvailable: false`. When no instance can be resolved (no git remote and no
-`GITEA_BASE_URL`), `cli.ts` prints a one-line notice to stderr and starts the
+for `git config get`); when git cannot be used, discovery degrades to the
+env-only sources (`GITEA_REPO_URL` / `GITEA_TOKEN`) / anonymous mode and
+`gitea_status` reports
+`gitAvailable: false`. When no instance can be resolved (no git remote and
+neither `GITEA_BASE_URL` nor `GITEA_REPO_URL`), `cli.ts` prints a one-line
+notice to stderr and starts the
 server in an **unconfigured** state — business tools throw `NotConfiguredError`,
 while `tools/list`, `resolve_repo`, `gitea_status`, and `configure_gitea` remain
 usable so the connection can be established at runtime without restarting.

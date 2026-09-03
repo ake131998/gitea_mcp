@@ -75,6 +75,8 @@ interface PlatformCredentialSources {
   configSection: "gitea" | "gitlab";
   /** Env var holding a fallback token. */
   envTokenVar: "GITEA_TOKEN" | "GITLAB_TOKEN";
+  /** Env var holding a self-contained credentialed repo URL (parsed by `parseRepoUrl`). */
+  envRepoUrlVar: "GITEA_REPO_URL" | "GITLAB_REPO_URL";
   /** `CredentialSource` recorded on config-token candidates. */
   configSource: CredentialSource;
   /** Scheme list for config/env token candidates. */
@@ -85,6 +87,8 @@ interface PlatformCredentialSources {
    * Scheme order for credential-store entries holding a password. Gitea uses
    * the username heuristic (`orderSchemesForCredentialStore`); GitLab's API
    * documents only token headers, so it is `bearer`-only regardless of user.
+   * Also applied to repo-URL candidates — their userinfo is the same
+   * `user:secret` shape as a credential-store entry.
    */
   storePasswordSchemes: (username?: string) => AuthScheme[];
 }
@@ -93,6 +97,7 @@ interface PlatformCredentialSources {
 const GITEA_SOURCES: PlatformCredentialSources = {
   configSection: "gitea",
   envTokenVar: "GITEA_TOKEN",
+  envRepoUrlVar: "GITEA_REPO_URL",
   configSource: "gitea-config",
   tokenSchemes: ["token"],
   storeUsernameOnlySchemes: ["token", "basic"],
@@ -103,6 +108,7 @@ const GITEA_SOURCES: PlatformCredentialSources = {
 const GITLAB_SOURCES: PlatformCredentialSources = {
   configSection: "gitlab",
   envTokenVar: "GITLAB_TOKEN",
+  envRepoUrlVar: "GITLAB_REPO_URL",
   configSource: "gitlab-config",
   tokenSchemes: ["bearer"],
   storeUsernameOnlySchemes: ["bearer"],
@@ -342,6 +348,37 @@ function candidateFromFill(
 }
 
 /**
+ * Build a `CandidateCredential` from a parsed repo URL (see `parseRepoUrl`).
+ * Scheme selection mirrors `candidateFromFill` — the userinfo is exactly a
+ * credential-store-shaped `user:secret` pair, so a `user:secret` URL follows
+ * the platform's password heuristic and a token stored in the username
+ * position follows the username-only scheme list.
+ */
+function candidateFromRepoUrl(
+  parsed: ParsedRepoUrl,
+  sources: PlatformCredentialSources,
+): CandidateCredential | null {
+  if (parsed.secret === undefined) return null;
+  if (parsed.username !== undefined) {
+    return {
+      source: "repo-url",
+      username: parsed.username,
+      secret: parsed.secret,
+      schemes: sources.storePasswordSchemes(parsed.username),
+      status: "pending",
+      nextSchemeIndex: 0,
+    };
+  }
+  return {
+    source: "repo-url",
+    secret: parsed.secret,
+    schemes: sources.storeUsernameOnlySchemes,
+    status: "pending",
+    nextSchemeIndex: 0,
+  };
+}
+
+/**
  * Sanitize an owner/repo segment extracted from file content by retaining
  * only characters valid in Gitea repository names (alphanumeric, dot, dash,
  * underscore). Returns null when nothing remains, signalling the caller to
@@ -391,6 +428,93 @@ export function parseGitRemoteUrl(url: string, remote = "origin"): ParsedRemote 
   }
 
   return null;
+}
+
+/**
+ * A repo URL — one self-contained git clone URL carrying username, secret,
+ * instance host, owner, and repo. `baseUrl` is rebuilt with the userinfo
+ * stripped (the same shape `parseGitRemoteUrl` produces), so no field of this
+ * result ever contains the raw URL or the secret-carrying userinfo.
+ */
+export interface ParsedRepoUrl {
+  /** `scheme://host[:port]` — userinfo stripped. */
+  baseUrl: string;
+  owner: string;
+  repo: string;
+  /** Username from the userinfo; undefined for `https://<token>@host` URLs. */
+  username?: string;
+  /**
+   * The secret carried by the URL: the password when one is present, else the
+   * username itself (the `https://<token>@host` convention mirrors a
+   * credential-store entry whose username position holds the token).
+   * Undefined for a credential-less URL — that source yields no candidate.
+   */
+  secret?: string;
+}
+
+/**
+ * Parse a `GITEA_REPO_URL` / `GITLAB_REPO_URL` value into its connection
+ * parts. Accepts the http(s) clone grammar with embedded credentials
+ * (`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>[.git]`); scp-like
+ * and ssh-protocol shapes are rejected — the userinfo is where the secret
+ * lives. Returns null for anything unparseable so a malformed value is
+ * ignored instead of crashing startup. SECURITY: the raw input is never
+ * thrown or echoed, and the result never carries the userinfo.
+ */
+export function parseRepoUrl(raw: string): ParsedRepoUrl | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  // Exactly `<owner>/<repo>[.git]` — deeper paths are not a Gitea repo URL.
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) return null;
+  const owner = sanitizeSegment(segments[0] ?? "");
+  const repo = sanitizeSegment((segments[1] ?? "").replace(/\.git$/, ""));
+  if (!owner || !repo) return null;
+
+  // URL keeps userinfo percent-encoded; the secret must be the literal value
+  // the user put behind the scheme. A malformed escape cannot be decoded —
+  // ignore the source rather than guess.
+  let username: string | undefined;
+  let secret: string | undefined;
+  try {
+    const u = parsed.username ? decodeURIComponent(parsed.username) : undefined;
+    const p = parsed.password ? decodeURIComponent(parsed.password) : undefined;
+    if (p !== undefined) {
+      username = u;
+      secret = p;
+    } else if (u !== undefined) {
+      // Token stored in the username position (`https://<token>@host/...`) —
+      // mirror the credential-store username-only convention.
+      secret = u;
+    }
+  } catch {
+    return null;
+  }
+
+  return { baseUrl: `${parsed.protocol}//${parsed.host}`, owner, repo, username, secret };
+}
+
+/**
+ * Strip `user[:pass]@` userinfo from a URL so a credentialed remote never
+ * reaches tool output (`resolve_repo` would otherwise echo remote urls
+ * verbatim). Values that are not scheme-shaped URLs (scp-like
+ * `git@host:owner/repo`) or carry no userinfo pass through unchanged.
+ */
+export function stripUrlUserInfo(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return raw;
+  }
+  if (!parsed.username && !parsed.password) return raw;
+  return `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
 
 /** Extract every `[remote "<name>"]` url entry from a git config file's contents. */
@@ -500,13 +624,17 @@ export async function resolveGitConfigPath(cwd: string): Promise<string> {
 }
 
 /**
- * Re-run the three-source credential discovery for an explicit baseUrl.
+ * Re-run the four-source credential discovery for an explicit baseUrl.
  *
  * Sources (in priority order):
- *   1. `[gitea "<baseUrl>"] token` / bare `[gitea] token` via
+ *   1. `GITEA_REPO_URL` / `GITLAB_REPO_URL` — a self-contained credentialed
+ *      repo URL (see `parseRepoUrl`); collected only when the URL's host
+ *      matches `baseUrl`, so its secret is never attempted against another
+ *      instance (e.g. after a configure-time base_url switch).
+ *   2. `[gitea "<baseUrl>"] token` / bare `[gitea] token` via
  *      `git config get --url=<baseUrl> gitea.token`.
- *   2. `GITEA_TOKEN` env var.
- *   3. The credential git itself would use for the host, via
+ *   3. `GITEA_TOKEN` env var.
+ *   4. The credential git itself would use for the host, via
  *      `git credential fill` (config chain + credential helpers — the OS
  *      keychain unlock the store plaintext file never had).
  *
@@ -516,11 +644,12 @@ export async function resolveGitConfigPath(cwd: string): Promise<string> {
  * matching entry in store file order).
  *
  * When the git binary cannot be used (missing, spawn failure, timeout),
- * sources 1 and 3 are skipped — `GITEA_TOKEN` (anonymous when absent) is the
- * only remaining source — and `gitAvailable: false` is returned so
- * `gitea_status` can surface the guidance. In-process parsing of credential
- * files is deliberately NOT kept as a fallback: its mere presence would
- * reintroduce the file-read source of CodeQL alert #8.
+ * sources 2 and 4 are skipped — the env sources (`GITEA_REPO_URL`,
+ * `GITEA_TOKEN`; anonymous when absent) are the only remaining sources —
+ * and `gitAvailable: false` is returned so `gitea_status` can surface the
+ * guidance. In-process parsing of credential files is deliberately NOT kept
+ * as a fallback: its mere presence would reintroduce the file-read source of
+ * CodeQL alert #8.
  *
  * Returns candidates in an empty array when no source yields a candidate
  * (anonymous mode or an unparseable baseUrl).
@@ -561,8 +690,22 @@ async function discoverCredentialsForHostCore(
   const candidates: CandidateCredential[] = [];
   let gitAvailable = true;
 
+  // Source 1: a self-contained credentialed repo URL (GITEA_REPO_URL /
+  // GITLAB_REPO_URL) — the only source carrying its own identity, so it
+  // outranks the stored credentials below. Collected ONLY when the URL's
+  // host matches the host being discovered for: the secret belongs to that
+  // instance and must never be attempted against another one (e.g. after
+  // GITEA_BASE_URL or a configure-time base_url switched instances).
   if (parsed) {
-    // Source 1: [<section> "<baseUrl>"] token / bare [<section>] token via git config.
+    const repoUrl = parseRepoUrl(env[sources.envRepoUrlVar] ?? "");
+    if (repoUrl && new URL(repoUrl.baseUrl).host === parsed.host) {
+      const candidate = candidateFromRepoUrl(repoUrl, sources);
+      if (candidate) candidates.push(candidate);
+    }
+  }
+
+  if (parsed) {
+    // Source 2: [<section> "<baseUrl>"] token / bare [<section>] token via git config.
     const configToken = await gitConfigTokenForUrl(options.baseUrl, sources.configSection, cwd, env);
     if (configToken.unavailable) {
       gitAvailable = false;
@@ -577,7 +720,7 @@ async function discoverCredentialsForHostCore(
     }
   }
 
-  // Source 2: <ENV>_TOKEN env (always collected, regardless of host).
+  // Source 3: <ENV>_TOKEN env (always collected, regardless of host).
   const envToken = env[sources.envTokenVar];
   if (envToken) {
     candidates.push({
@@ -589,7 +732,7 @@ async function discoverCredentialsForHostCore(
     });
   }
 
-  // Source 3: the credential git itself would use (git credential fill).
+  // Source 4: the credential git itself would use (git credential fill).
   if (parsed) {
     const fill = await gitCredentialFill(
       {
@@ -618,18 +761,19 @@ async function discoverCredentialsForHostCore(
 /**
  * Discover the Gitea connection config from env + the local git context.
  *
- * baseUrl: `GITEA_BASE_URL` (env) wins; otherwise derived from the selected
- *   remote (`upstream` → `origin` → first). Returns null only when neither is
- *   available — callers should treat that as "start the server unconfigured".
+ * baseUrl: `GITEA_BASE_URL` (env) wins; otherwise the `GITEA_REPO_URL` repo
+ *   URL's host; otherwise derived from the selected remote (`upstream` →
+ *   `origin` → first). Returns null only when none is available — callers
+ *   should treat that as "start the server unconfigured".
  *
  * candidates: collected via `discoverCredentialsForHost`, which re-runs the
- *   three-source discovery (git config token → env token → git credential
- *   helpers) for the resolved baseUrl. When no remote and no env baseUrl
- *   exist, this function returns null so the CLI can start the server in its
- *   unconfigured state.
+ *   four-source discovery (repo URL → git config token → env token → git
+ *   credential helpers) for the resolved baseUrl. When no remote and no env
+ *   source provide a baseUrl, this function returns null so the CLI can
+ *   start the server in its unconfigured state.
  *
  * owner/repo: `GITEA_DEFAULT_OWNER`/`GITEA_DEFAULT_REPO` (env) win; otherwise
- * taken from the selected remote.
+ * the repo URL's path; otherwise taken from the selected remote.
  */
 export async function discoverConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
   return discoverConfigCore(options, GITEA_ENV, GITEA_SOURCES);
@@ -638,28 +782,32 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
 /** Env-var names a platform's `discoverConfig` reads. */
 interface PlatformDiscoveryEnv {
   baseUrlVar: "GITEA_BASE_URL" | "GITLAB_BASE_URL";
+  /** Self-contained credentialed repo URL, parsed by `parseRepoUrl`. */
+  repoUrlVar: "GITEA_REPO_URL" | "GITLAB_REPO_URL";
   defaultOwnerVar: "GITEA_DEFAULT_OWNER" | "GITLAB_DEFAULT_OWNER";
   defaultRepoVar: "GITEA_DEFAULT_REPO" | "GITLAB_DEFAULT_REPO";
 }
 
 const GITEA_ENV: PlatformDiscoveryEnv = {
   baseUrlVar: "GITEA_BASE_URL",
+  repoUrlVar: "GITEA_REPO_URL",
   defaultOwnerVar: "GITEA_DEFAULT_OWNER",
   defaultRepoVar: "GITEA_DEFAULT_REPO",
 };
 
 const GITLAB_ENV: PlatformDiscoveryEnv = {
   baseUrlVar: "GITLAB_BASE_URL",
+  repoUrlVar: "GITLAB_REPO_URL",
   defaultOwnerVar: "GITLAB_DEFAULT_OWNER",
   defaultRepoVar: "GITLAB_DEFAULT_REPO",
 };
 
 /**
  * GitLab counterpart of `discoverConfig`: `GITLAB_BASE_URL` /
- * `GITLAB_DEFAULT_OWNER` / `GITLAB_DEFAULT_REPO` (env) override the selected
- * remote, and credentials come from the GitLab-only sources (see
- * `discoverGitLabCredentialsForHost`). Remote selection is shared
- * (`upstream` → `origin` → first).
+ * `GITLAB_REPO_URL` / `GITLAB_DEFAULT_OWNER` / `GITLAB_DEFAULT_REPO` (env)
+ * tier above the selected remote, and credentials come from the GitLab-only
+ * sources (see `discoverGitLabCredentialsForHost`). Remote selection is
+ * shared (`upstream` → `origin` → first).
  */
 export async function discoverGitLabConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
   return discoverConfigCore(options, GITLAB_ENV, GITLAB_SOURCES);
@@ -673,16 +821,28 @@ async function discoverConfigCore(
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
   const envBaseUrl = env[platformEnv.baseUrlVar];
+  // Scalar precedence is defined in exactly one place — these expressions.
+  // A repo URL is a self-contained connection, so its parts tier between the
+  // explicit scalar env overrides and the git remote's derived values. A
+  // malformed value parses to null here: the source is ignored, never fatal.
+  const repoUrl = parseRepoUrl(env[platformEnv.repoUrlVar] ?? "");
 
   const gitConfigPath = await resolveGitConfigPath(cwd);
   const gitConfigContent = await readOptionalFile(gitConfigPath);
   const parsedRemotes = parseRemotes(gitConfigContent);
   const selected = selectRemote(parsedRemotes);
 
-  const baseUrl = envBaseUrl ?? selected?.baseUrl;
+  const baseUrl = envBaseUrl ?? repoUrl?.baseUrl ?? selected?.baseUrl;
   if (!baseUrl) return null;
 
-  const repoPath = selected ? `${selected.owner}/${selected.repo}` : undefined;
+  // The credential-fill path hint follows whichever source decided the
+  // connection — a repo URL's path is only meaningful on the repo URL's host.
+  const repoPath =
+    repoUrl && !envBaseUrl
+      ? `${repoUrl.owner}/${repoUrl.repo}`
+      : selected
+        ? `${selected.owner}/${selected.repo}`
+        : undefined;
   const { candidates, gitAvailable } = await discoverCredentialsForHostCore(
     { baseUrl, cwd, env, repoPath },
     sources,
@@ -690,8 +850,8 @@ async function discoverConfigCore(
 
   return {
     baseUrl,
-    defaultOwner: env[platformEnv.defaultOwnerVar] ?? selected?.owner,
-    defaultRepo: env[platformEnv.defaultRepoVar] ?? selected?.repo,
+    defaultOwner: env[platformEnv.defaultOwnerVar] ?? repoUrl?.owner ?? selected?.owner,
+    defaultRepo: env[platformEnv.defaultRepoVar] ?? repoUrl?.repo ?? selected?.repo,
     remote: selected?.remote,
     candidates,
     gitAvailable,

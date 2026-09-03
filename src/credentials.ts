@@ -24,7 +24,8 @@ export type CredentialSource =
   | "gitea-config"
   | "gitlab-config"
   | "env"
-  | "credential-store";
+  | "credential-store"
+  | "repo-url";
 
 /**
  * HTTP auth scheme. All are sent via the `Authorization` header.
@@ -43,7 +44,11 @@ export type AuthScheme = "token" | "basic" | "bearer";
  */
 export interface CandidateCredential {
   source: CredentialSource;
-  /** Username from a credential-store URL. Undefined for config/env sources. */
+  /**
+   * Username from a credential-store URL, or from a `*_REPO_URL` userinfo
+   * (`undefined` only for the token-in-username shape). Undefined for
+   * config/env sources.
+   */
   username?: string;
   /** The secret value (PAT, password, or OAuth token). Never logged. */
   secret: string;

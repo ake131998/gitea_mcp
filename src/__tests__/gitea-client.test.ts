@@ -1223,6 +1223,27 @@ describe("GiteaClient", () => {
       expect(status.candidates[0].status).toBe("active");
     });
 
+    it("getCredentialStatus redacts a repo-url candidate the same way (source surfaced, secret never)", async () => {
+      stubFetch(buildResponse({ id: 1 }));
+      const client = new GiteaClient({
+        baseUrl: "https://g",
+        candidates: [
+          candidate({
+            source: "repo-url",
+            username: "alice",
+            secret: "repo-url-s3cret",
+            schemes: ["basic", "token"],
+          }),
+        ],
+      });
+      await client.getIssue("o", "r", 1);
+      const serialized = JSON.stringify(client.getCredentialStatus());
+      expect(serialized).toContain('"repo-url"');
+      expect(serialized).toContain("a***");
+      expect(serialized).toContain("secretPresent\":true");
+      expect(serialized).not.toContain("repo-url-s3cret");
+    });
+
     it("getCredentialStatus reflects exhaustion after all attempts fail", async () => {
       stubFetchSequence(
         buildResponse("no", 401, "Unauthorized"),

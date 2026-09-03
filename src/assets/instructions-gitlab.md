@@ -9,12 +9,16 @@ them correctly.
 ## Config is auto-discovered from git (env vars optional)
 
 On start the server reads `<cwd>/.git/config` and derives `baseUrl`, `owner`,
-and `repo` so one install can serve many projects. The `GITLAB_BASE_URL` /
-`GITLAB_DEFAULT_OWNER` / `GITLAB_DEFAULT_REPO` env vars are OPTIONAL overrides
-that win over git discovery; `GITLAB_TOKEN` is one auth candidate, tried after
-a `.git/config [gitlab]` token and before git's credential machinery
+and `repo` so one install can serve many projects. `GITLAB_REPO_URL` — one
+credentialed clone URL (`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`) —
+supplies instance, owner/repo, and a credential in a single variable, sitting
+below the `GITLAB_BASE_URL` / `GITLAB_DEFAULT_OWNER` / `GITLAB_DEFAULT_REPO`
+env vars (OPTIONAL overrides that win over git discovery); `GITLAB_TOKEN` is
+one auth candidate, tried after the repo-URL userinfo and a
+`.git/config [gitlab]` token and before git's credential machinery
 (`git credential fill`). The remote is chosen `upstream` first, then `origin`.
-If the cwd has no git remote and `GITLAB_BASE_URL` is unset, the server starts
+If the cwd has no git remote and neither `GITLAB_BASE_URL` nor `GITLAB_REPO_URL`
+is set, the server starts
 in an **unconfigured** state — tools/list is available but business tools
 return a `GitLabNotConfiguredError`. Use the **configure_gitlab** tool to set
 the connection at runtime. Credentials are sent only as

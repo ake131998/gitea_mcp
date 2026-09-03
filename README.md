@@ -44,7 +44,7 @@ The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](ht
 ## Requirements
 
 - **Node.js ≥ 24** — uses the global `fetch`
-- **git ≥ 2.46** on `PATH` — used for credential discovery (`git config get` / `git credential fill`; `git credential fill` also honors every configured credential helper, including OS keychains). When git cannot be used at all, discovery falls back to `GITEA_TOKEN`-only / anonymous mode — `gitea_status` reports `gitAvailable: false`. On git < 2.46, the `.git/config [gitea]` token source silently fails (exit codes are indistinguishable); credential helpers and `GITEA_TOKEN` still work.
+- **git ≥ 2.46** on `PATH` — used for credential discovery (`git config get` / `git credential fill`; `git credential fill` also honors every configured credential helper, including OS keychains). When git cannot be used at all, discovery falls back to the env-only sources (`GITEA_REPO_URL` / `GITEA_TOKEN`) / anonymous mode — `gitea_status` reports `gitAvailable: false`. On git < 2.46, the `.git/config [gitea]` token source silently fails (exit codes are indistinguishable); credential helpers and the env sources still work.
 - A **Gitea instance** (self-hosted or Gitea Cloud) reachable over HTTP
 - A **Gitea API token** (or a git credential) for anything beyond reading public repositories
 
@@ -92,6 +92,7 @@ projects. Set them only to override the discovery or to restrict the tool surfac
 |----------|:--------:|-------------|
 | `GITEA_BASE_URL` | No | Gitea instance URL (e.g. `https://gitea.example.com`). Auto-detected from the project's git remote when omitted. |
 | `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after a `.git/config [gitea]` token and before git's credential machinery (see [Token discovery](#token-discovery)). |
+| `GITEA_REPO_URL` | No | One self-contained credentialed clone URL — `https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git` — carrying the instance URL, default owner/repo, and an auth candidate in a single variable. Each part sits below its explicit override (`GITEA_BASE_URL`, `GITEA_DEFAULT_OWNER`, `GITEA_DEFAULT_REPO`) and above the git remote; parsed in-memory, works without git, and the embedded secret never appears in any output. |
 | `GITEA_DEFAULT_OWNER` | No | Default repository owner — skip passing `owner` on every call |
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
 | `GITEA_UPLOAD_ROOT` | No | Root directory that attachment uploads (`create_issue_attachment` / `create_issue_comment_attachment`) may read from. Defaults to the server's working directory; the resolved path must stay inside this root. |
@@ -99,6 +100,7 @@ projects. Set them only to override the discovery or to restrict the tool surfac
 | `MCP_TOOL_ALLOWLIST` | No | Comma-separated `snake_case` tool names the server may expose (entries are trimmed and matched exactly). Unset or empty keeps every tool available; an entry naming no tool on the active platform aborts startup with a `Fatal error`. |
 | `GITLAB_BASE_URL` | No | GitLab instance URL (e.g. `https://gitlab.example.com`). Auto-detected from the project's git remote when omitted; its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
 | `GITLAB_TOKEN` | No | GitLab API access token. One of several auth candidates; tried after a `.git/config [gitlab]` token and before git's credential machinery. Always sent as `Authorization: Bearer <token>`. |
+| `GITLAB_REPO_URL` | No | GitLab counterpart of `GITEA_REPO_URL` — one credentialed clone URL supplying the instance URL, default owner/project, and a `Bearer` auth candidate. Its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
 | `GITLAB_DEFAULT_OWNER` | No | Default project owner (GitLab mode) — skip passing `owner` on every call |
 | `GITLAB_DEFAULT_REPO` | No | Default project name (GitLab mode) — skip passing `repo` on every call |
 
@@ -109,14 +111,15 @@ process serves one platform — to use both, register two MCP client entries. Th
 platform is selected at startup:
 
 1. `MCP_PLATFORM=gitlab` (or `gitea`) wins when set;
-2. otherwise GitLab is auto-selected when `GITLAB_BASE_URL` or `GITLAB_TOKEN` is set
-   and no `GITEA_*` connection variable is;
+2. otherwise GitLab is auto-selected when any of `GITLAB_BASE_URL`, `GITLAB_TOKEN`,
+   or `GITLAB_REPO_URL` is set and no `GITEA_*` connection variable is;
 3. the default remains `gitea` (existing configurations behave unchanged).
 
 In GitLab mode the same 68 business tool names run against the GitLab REST API v4
 (`/api/v4`), plus `configure_gitlab` / `gitlab_status` instead of `configure_gitea` /
-`gitea_status`. Discovery mirrors the Gitea contract: a `[gitlab "<baseUrl>"] token`
-git-config entry, `GITLAB_TOKEN`, and `git credential fill` — every credential is
+`gitea_status`. Discovery mirrors the Gitea contract: a `GITLAB_REPO_URL` repo URL,
+a `[gitlab "<baseUrl>"] token` git-config entry, `GITLAB_TOKEN`, and
+`git credential fill` — every credential is
 sent only as `Authorization: Bearer <token>` (never as a URL query parameter).
 
 Coverage notes — operations without a GitLab counterpart fail with a typed
@@ -156,7 +159,17 @@ On start, `gitea-mcp` reads `<cwd>/.git/config` and derives:
 - **Remote selection** — the `upstream` remote is preferred, falling back to `origin`, then
   any other remote. Both are reported by `resolve_repo` when they differ.
 
-If the current directory has no git remote and `GITEA_BASE_URL` is not set, the server
+A `GITEA_REPO_URL` value — one credentialed clone URL of the form
+`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git` — is a self-contained
+alternative to the whole chain above: it supplies the instance URL, the default
+owner/repo, and an auth candidate at once (parsed in-memory, so it works even when
+git is unavailable). Its parts sit below the explicit `GITEA_BASE_URL` /
+`GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` overrides and above the git remote,
+and the raw URL is never echoed: `resolve_repo` strips embedded userinfo from the
+remote URLs it reports.
+
+If the current directory has no git remote and neither `GITEA_BASE_URL` nor
+`GITEA_REPO_URL` is set, the server
 starts in an **unconfigured** state — `tools/list` is fully available, but business tools
 return a `NotConfiguredError` on invocation. Use the `configure_gitea` tool to set the
 connection at runtime (session-scoped, never persisted), or run from inside a cloned
@@ -164,22 +177,27 @@ Gitea repository, or set `GITEA_BASE_URL` / `GITEA_TOKEN` explicitly.
 
 ### Token discovery
 
-`gitea-mcp` collects authentication **candidates** from three sources, in this
+`gitea-mcp` collects authentication **candidates** from four sources, in this
 priority order — and asks git itself for the stored ones, so every credential
 helper you have configured works (including OS keychains: `wincred`,
 `osxkeychain`, `libsecret`):
 
-1. A `[gitea "<baseUrl>"]` section in `.git/config` (a bare `[gitea]` section is
+1. The `GITEA_REPO_URL` repo URL, when it points at the instance host — its
+   embedded `user:secret` userinfo becomes the top-priority candidate, tried
+   with the same username heuristic as a git credential (`basic` first for a
+   real-looking username, `token` first for `oauth2` / `x-oauth-basic` / a
+   token stored in the username position).
+2. A `[gitea "<baseUrl>"]` section in `.git/config` (a bare `[gitea]` section is
    a host-wide fallback), read via `git config get --url=<baseUrl> gitea.token`:
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    Always sent as `Authorization: token <token>`.
-2. The `GITEA_TOKEN` environment variable — also sent as `Authorization: token`.
-   When the `git` binary is not usable at runtime, this is the only remaining
-   token source.
-3. The credential git itself would use for the instance host, retrieved via
+3. The `GITEA_TOKEN` environment variable — also sent as `Authorization: token`.
+   When the `git` binary is not usable at runtime, the env sources above are
+   the only remaining candidates.
+4. The credential git itself would use for the instance host, retrieved via
    `git credential fill` (config chain + credential helpers — the store file,
    OS keychains, or any helper you configured). With several identities stored
    for the host, git picks the one it would use; `configure_gitea`'s `username`
@@ -482,7 +500,7 @@ gitea-mcp
 | Tool | Description |
 |------|-------------|
 | `list_my_repos` | List repositories accessible to the authenticated user |
-| `resolve_repo` | Detect `baseUrl`, `owner`, and `repo` from the project's git remotes (`upstream` preferred, then `origin`) |
+| `resolve_repo` | Detect `baseUrl`, `owner`, and `repo` from the project's git remotes (`upstream` preferred, then `origin`); echoed remote URLs are stripped of any embedded userinfo |
 | `gitea_status` | Inspect credential-handling state — active candidate, exhausted candidates, last error (redacted; secrets never exposed) |
 | `configure_gitea` | Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts `base_url`, `owner`, `repo`, and/or `username`. Providing `base_url` or `username` triggers credential re-discovery from the existing local sources — tokens never pass through this tool |
 

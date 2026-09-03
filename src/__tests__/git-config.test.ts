@@ -8,9 +8,11 @@ vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
 
 import {
   parseGitRemoteUrl,
+  parseRepoUrl,
   readGitRemotes,
   parseRemotes,
   selectRemote,
+  stripUrlUserInfo,
   discoverConfig,
   discoverCredentialsForHost,
   discoverGitLabConfig,
@@ -872,5 +874,312 @@ describe("git-config error boundaries", () => {
     await expect(discoverConfig({ cwd: "/repo", env: { GITEA_BASE_URL: "https://gitea.example" } })).rejects.toThrow(
       /EISDIR/,
     );
+  });
+});
+
+describe("parseRepoUrl", () => {
+  it("parses a full credentialed URL with a port (userinfo stripped from baseUrl)", () => {
+    expect(parseRepoUrl("https://alice:s3cret@gitea.example:8443/owner/repo.git")).toEqual({
+      baseUrl: "https://gitea.example:8443",
+      owner: "owner",
+      repo: "repo",
+      username: "alice",
+      secret: "s3cret",
+    });
+  });
+
+  it("accepts a URL without the .git suffix", () => {
+    expect(parseRepoUrl("https://alice:s3cret@gitea.example/owner/repo")).toMatchObject({
+      baseUrl: "https://gitea.example",
+      owner: "owner",
+      repo: "repo",
+    });
+  });
+
+  it("normalizes the default port away in the derived baseUrl", () => {
+    expect(parseRepoUrl("https://a:b@gitea.example:443/owner/repo.git")!.baseUrl).toBe("https://gitea.example");
+    expect(parseRepoUrl("http://a:b@gitea.example:80/owner/repo.git")!.baseUrl).toBe("http://gitea.example");
+  });
+
+  it("decodes percent-encoded userinfo to the literal values", () => {
+    const r = parseRepoUrl("https://us%21er:sec%2Fret@gitea.example/owner/repo.git");
+    expect(r).toMatchObject({ username: "us!er", secret: "sec/ret" });
+  });
+
+  it("maps a token-only username (`https://<token>@host`) to a secret without username", () => {
+    expect(parseRepoUrl("https://tok123@gitea.example/owner/repo.git")).toEqual({
+      baseUrl: "https://gitea.example",
+      owner: "owner",
+      repo: "repo",
+      username: undefined,
+      secret: "tok123",
+    });
+  });
+
+  it("returns no secret for a credential-less URL (connection info only)", () => {
+    const r = parseRepoUrl("https://gitea.example/owner/repo.git");
+    expect(r).toMatchObject({ baseUrl: "https://gitea.example", owner: "owner", repo: "repo" });
+    expect(r!.secret).toBeUndefined();
+    expect(r!.username).toBeUndefined();
+  });
+
+  it("rejects scp-like, scheme-less, non-http(s), and over-long ports", () => {
+    expect(parseRepoUrl("git@gitea.example:owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("gitea.example/owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("ssh://user:pass@gitea.example/owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("ftp://user:pass@gitea.example/owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("https://user:pass@gitea.example:99999/owner/repo.git")).toBeNull();
+  });
+
+  it("rejects shapes that are not exactly <owner>/<repo>[.git]", () => {
+    expect(parseRepoUrl("https://user:pass@gitea.example")).toBeNull();
+    expect(parseRepoUrl("https://user:pass@gitea.example/owner")).toBeNull();
+    expect(parseRepoUrl("https://user:pass@gitea.example/sub/owner/repo.git")).toBeNull();
+  });
+
+  it("rejects unsanitizable owner/repo segments", () => {
+    expect(parseRepoUrl("https://user:pass@gitea.example/!!!/repo.git")).toBeNull();
+    expect(parseRepoUrl("https://user:pass@gitea.example/owner/###.git")).toBeNull();
+  });
+
+  it("rejects a malformed percent escape instead of guessing", () => {
+    expect(parseRepoUrl("https://user:%zz@gitea.example/owner/repo.git")).toBeNull();
+  });
+
+  it("never echoes the raw input in a thrown message (it returns null instead)", () => {
+    const raw = "https://alice:s3cret@gitea.example/!!!/repo.git";
+    expect(() => parseRepoUrl(raw)).not.toThrow();
+    expect(parseRepoUrl(raw)).toBeNull();
+  });
+});
+
+describe("stripUrlUserInfo", () => {
+  it("strips user:pass userinfo from an https URL", () => {
+    expect(stripUrlUserInfo("https://alice:s3cret@gitea.example/owner/repo.git")).toBe(
+      "https://gitea.example/owner/repo.git",
+    );
+  });
+
+  it("strips a username-only userinfo", () => {
+    expect(stripUrlUserInfo("https://tok123@gitea.example/owner/repo.git")).toBe(
+      "https://gitea.example/owner/repo.git",
+    );
+  });
+
+  it("strips userinfo from an ssh:// URL and keeps a bare URL unchanged", () => {
+    expect(stripUrlUserInfo("ssh://git@gitea.example/owner/repo.git")).toBe("ssh://gitea.example/owner/repo.git");
+    expect(stripUrlUserInfo("https://gitea.example/owner/repo.git")).toBe("https://gitea.example/owner/repo.git");
+  });
+
+  it("passes scp-like remotes through unchanged (no scheme to parse)", () => {
+    expect(stripUrlUserInfo("git@gitea.example:owner/repo.git")).toBe("git@gitea.example:owner/repo.git");
+  });
+});
+
+describe("repo URL connection source (GITEA_REPO_URL / GITLAB_REPO_URL)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    execCalls = [];
+    mockExec(() => ({ code: 1 }));
+  });
+
+  it("configures the server from GITEA_REPO_URL alone — no git remote, git unavailable", async () => {
+    // No .git/config at all; git cannot run. The pure-env repo-URL source
+    // must still produce a configured server (acceptance criterion 1/8).
+    mockFiles({});
+    mockGit({ configUnavailable: true, fillUnavailable: true });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example:8443/owner/repo.git" },
+    });
+    expect(cfg).toMatchObject({
+      baseUrl: "https://gitea.example:8443",
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      gitAvailable: false,
+    });
+    expect(cfg!.candidates).toEqual([
+      {
+        source: "repo-url",
+        username: "alice",
+        secret: "s3cret",
+        schemes: ["basic", "token"],
+        status: "pending",
+        nextSchemeIndex: 0,
+      },
+    ]);
+  });
+
+  it("follows the username heuristic for scheme order (oauth2 → token first)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://oauth2:s3cret@gitea.example/owner/repo.git" },
+    });
+    expect(cfg!.candidates[0]).toMatchObject({ source: "repo-url", schemes: ["token", "basic"] });
+  });
+
+  it("maps a token-only username to the username-only scheme list", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://tok123@gitea.example/owner/repo.git" },
+    });
+    expect(cfg!.candidates).toEqual([
+      expect.objectContaining({ source: "repo-url", secret: "tok123", schemes: ["token", "basic"] }),
+    ]);
+    expect(cfg!.candidates[0].username).toBeUndefined();
+  });
+
+  it("ranks the repo-url candidate first, ahead of config token / env token / git credential", async () => {
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n',
+    });
+    mockGit({ configToken: "configtok", fill: { username: "alice", password: "credtok" } });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://gitea.example",
+      cwd: "/repo",
+      env: { GITEA_TOKEN: "envtok", GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" },
+    });
+    expect(candidates.map((c) => c.source)).toEqual(["repo-url", "gitea-config", "env", "credential-store"]);
+  });
+
+  it("beats the git remote for baseUrl/owner/repo while the remote stays selected", async () => {
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://old.example/origin/repo.git\n',
+    });
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" },
+    });
+    expect(cfg).toMatchObject({
+      baseUrl: "https://gitea.example",
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      remote: "origin",
+    });
+  });
+
+  it("yields no repo-url candidate when GITEA_BASE_URL points at another host", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: {
+        GITEA_BASE_URL: "https://other.example",
+        GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git",
+      },
+    });
+    // The secret belongs to gitea.example and must never be attempted
+    // against other.example.
+    expect(cfg!.baseUrl).toBe("https://other.example");
+    expect(cfg!.candidates.filter((c) => c.source === "repo-url")).toHaveLength(0);
+  });
+
+  it("drops a repo-url candidate on configure-time re-discovery for a different host", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const { candidates } = await discoverCredentialsForHost({
+      baseUrl: "https://other.example",
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" },
+    });
+    expect(candidates).toEqual([]);
+  });
+
+  it("lets GITEA_DEFAULT_OWNER/REPO override the repo URL's path", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: {
+        GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git",
+        GITEA_DEFAULT_OWNER: "myorg",
+        GITEA_DEFAULT_REPO: "myrepo",
+      },
+    });
+    expect(cfg).toMatchObject({ defaultOwner: "myorg", defaultRepo: "myrepo" });
+  });
+
+  it("feeds the repo URL's path to git credential fill when the URL decides the connection", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" },
+    });
+    const fillCall = execCalls.find((c) => c.args[0] === "credential")!;
+    expect(fillCall.stdin).toContain("host=gitea.example\n");
+    expect(fillCall.stdin).toContain("path=owner/repo\n");
+  });
+
+  it("ignores a malformed GITEA_REPO_URL without crashing (unconfigured start, raw value never echoed)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    await expect(
+      discoverConfig({ cwd: "/repo", env: { GITEA_REPO_URL: "git@gitea.example:owner/repo.git" } }),
+    ).resolves.toBeNull();
+    // A malformed value alongside a usable git remote is ignored, not fatal.
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n',
+    });
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "not-a-url-at-all" },
+    });
+    expect(cfg).toMatchObject({ baseUrl: "https://gitea.example", defaultOwner: "origin" });
+  });
+
+  it("never collects GITLAB_REPO_URL on the Gitea platform (nor the reverse)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    // Gitea discovery with a GitLab repo URL: unconfigured — the variable is
+    // invisible to the Gitea pipeline.
+    await expect(
+      discoverConfig({ cwd: "/repo", env: { GITLAB_REPO_URL: "https://alice:s3cret@gitlab.example/owner/repo.git" } }),
+    ).resolves.toBeNull();
+    // ...and even with a git remote present, no repo-url candidate leaks in.
+    mockFiles({
+      "/repo/.git/config": '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n',
+    });
+    const gitea = await discoverConfig({
+      cwd: "/repo",
+      env: { GITLAB_REPO_URL: "https://alice:s3cret@gitlab.example/owner/repo.git" },
+    });
+    expect(gitea!.candidates.filter((c) => c.source === "repo-url")).toHaveLength(0);
+
+    // Symmetric: GitLab discovery never collects GITEA_REPO_URL.
+    mockFiles({});
+    await expect(
+      discoverGitLabConfig({ cwd: "/repo", env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" } }),
+    ).resolves.toBeNull();
+  });
+
+  it("works symmetrically in GitLab mode with the bearer scheme", async () => {
+    mockFiles({});
+    mockGit({ configUnavailable: true, fillUnavailable: true });
+    const cfg = await discoverGitLabConfig({
+      cwd: "/repo",
+      env: { GITLAB_REPO_URL: "https://alice:s3cret@gitlab.example/owner/repo.git" },
+    });
+    expect(cfg).toMatchObject({
+      baseUrl: "https://gitlab.example",
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      gitAvailable: false,
+    });
+    expect(cfg!.candidates).toEqual([
+      {
+        source: "repo-url",
+        username: "alice",
+        secret: "s3cret",
+        schemes: ["bearer"],
+        status: "pending",
+        nextSchemeIndex: 0,
+      },
+    ]);
   });
 });

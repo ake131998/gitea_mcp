@@ -16,14 +16,18 @@ project's git remotes; this skill is the fallback when that fails or the token i
 
 On start, the server reads `<cwd>/.git/config` and resolves in this order:
 
-1. **baseUrl** — `GITEA_BASE_URL` env var, else derived from the selected remote's host.
+1. **baseUrl** — `GITEA_BASE_URL` env var; else the `GITEA_REPO_URL` repo URL's host; else
+   derived from the selected remote's host.
    SSH remotes (`git@host:owner/repo`) resolve to `https://host`.
-2. **owner / repo** — `GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` env vars, else from the
+2. **owner / repo** — `GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO` env vars; else the
+   `GITEA_REPO_URL` repo URL's path; else from the
    selected remote's URL.
 3. **Remote selection** — `upstream` remote first, falling back to `origin`, then any
-   other remote. Both are surfaced in `resolve_repo` output.
+   other remote. Both are surfaced in `resolve_repo` output (with embedded userinfo
+   stripped from every echoed URL).
 
-If the working directory has NO git remote and `GITEA_BASE_URL` is unset, the server
+If the working directory has NO git remote and neither `GITEA_BASE_URL` nor
+`GITEA_REPO_URL` is set, the server
 starts in an **unconfigured** state — `tools/list` is available, but business tools
 return `NotConfiguredError`. Use the `configure_gitea` tool to set the connection at
 runtime (session-scoped, never persisted), or guide the user to restart from a cloned
@@ -31,21 +35,25 @@ repo / with env vars set.
 
 ## Token discovery chain (tried in order)
 
-1. `.git/config` — a `[gitea "<baseUrl>"]` section (read via
+1. `GITEA_REPO_URL` — a self-contained credentialed clone URL
+   (`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`) whose userinfo
+   becomes the top-priority candidate when the URL points at the instance host.
+2. `.git/config` — a `[gitea "<baseUrl>"]` section (read via
    `git config get --url=<baseUrl> gitea.token`), e.g.
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    A bare `[gitea]` section with `token = ...` is a host-wide fallback.
-2. `GITEA_TOKEN` env var.
-3. The credential git itself would use for the instance host, retrieved via
+3. `GITEA_TOKEN` env var.
+4. The credential git itself would use for the instance host, retrieved via
    `git credential fill` — this honors every configured credential helper,
    including OS keychains (`wincred` / `osxkeychain` / `libsecret`) and the
    store file (`~/.git-credentials`). If `gitea_status` reports
-   `gitAvailable: false`, git could not be used at all — only `GITEA_TOKEN`
-   remains; guide the user to install git (≥ 2.46) or set `GITEA_TOKEN`.
-4. If none of the above yield a token, the server starts WITHOUT a token (anonymous). Public
+   `gitAvailable: false`, git could not be used at all — only the env sources
+   (`GITEA_REPO_URL` / `GITEA_TOKEN`) remain; guide the user to install git
+   (≥ 2.46) or set `GITEA_TOKEN` / `GITEA_REPO_URL`.
+5. If none of the above yield a token, the server starts WITHOUT a token (anonymous). Public
    repos may be read; writes and private repos return 401 — that is the signal to help the
    user add a token via one of the sources above.
 
@@ -53,7 +61,7 @@ repo / with env vars set.
 
 1. Confirm the instance: run `resolve_repo` (no args) and read its `baseUrl` and `remote`.
    If it throws, the cwd has no usable git remote — tell the user to run gitea-mcp from a
-   cloned repo, or set `GITEA_BASE_URL` + `GITEA_TOKEN`.
+   cloned repo, or set `GITEA_BASE_URL` + `GITEA_TOKEN` (or a single `GITEA_REPO_URL`).
 2. Ask the user to create a token at `<baseUrl>/user/settings/applications` (Gitea → Settings
    → Applications → Access Tokens). Capture the scopes they need: `issue`, `comment`,
    `label`, `milestone` (read+write). NEVER have the user paste a token into chat unless they
@@ -65,7 +73,9 @@ repo / with env vars set.
      can never match), or
    - store it as a git credential (any configured helper — e.g.
      `git credential approve`, or an OS-keychain helper), or
-   - export `GITEA_TOKEN` (and `GITEA_BASE_URL`) in their MCP client config.
+   - export `GITEA_TOKEN` (and `GITEA_BASE_URL`) in their MCP client config, or
+     — when the user already holds a credentialed clone URL — set
+     `GITEA_REPO_URL` to it (parsed in-memory, works without git, never echoed).
    `<baseUrl>` is the EXACT value `resolve_repo` reported (scheme + host, with port if any).
 4. After the user stores the credential, call `configure_gitea` with the same `base_url`
    to trigger credential re-discovery — no restart needed. If the server started
