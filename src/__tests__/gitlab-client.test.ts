@@ -1305,14 +1305,15 @@ describe("GitLabClient", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(buildResponse({ iid: 5, labels: null })) // read current
-      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: ["a"] })) // PUT add_labels
-      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: ["a"] })) // re-read issue
-      .mockResolvedValueOnce(buildResponse([{ id: 1, name: "a", color: "#111111" }])); // labels list
+      .mockResolvedValueOnce(buildResponse({ iid: 5 })) // PUT add_labels
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: null })) // re-read issue (still no labels array)
+      .mockResolvedValueOnce(buildResponse([{ id: 1, name: "a", color: "#111111" }])); // labels list (filtered to [])
     vi.stubGlobal("fetch", fetchMock);
     const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
     const result = await client.addIssueLabels("o", "r", 5, ["a"]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ add_labels: "a" });
-    expect(result).toEqual([{ id: 1, name: "a", color: "#111111" }]);
+    // The re-read found no array labels, so the mapped result is empty.
+    expect(result).toEqual([]);
   });
 
   it("remove_issue_dependency defaults a half-specified cross-project target to the same repo", async () => {

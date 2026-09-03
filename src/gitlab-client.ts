@@ -324,7 +324,8 @@ export class GitLabClient {
     path: string,
     body?: Record<string, unknown>,
   ): Promise<T> {
-    if (this.baseUrl === null) throw new GitLabNotConfiguredError();
+    // The unconfigured guard lives in `doRequest` (single choke point) —
+    // `request` immediately delegates into it.
 
     const activeIdx = findActiveCandidateIndex(this.candidates);
     if (activeIdx !== null) {
