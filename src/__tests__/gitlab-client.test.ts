@@ -933,7 +933,7 @@ describe("GitLabClient", () => {
   });
 
   it("check_issue_blocked computes the structured verdict from links", async () => {
-    const fetchMock = stubFetch(
+    stubFetch(
       buildResponse([
         { issue_link_id: 1, link_type: "is_blocked_by", iid: 2, project_id: 1, state: "opened" },
         { issue_link_id: 2, link_type: "is_blocked_by", iid: 3, project_id: 1, state: "closed" },
@@ -981,7 +981,7 @@ describe("GitLabClient", () => {
   });
 
   it("without an active credential a 403 stays an auth error (retry semantics)", async () => {
-    const fetchMock = stubFetch(buildResponse("403 Forbidden", 403, "Forbidden"));
+    stubFetch(buildResponse("403 Forbidden", 403, "Forbidden"));
     const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
     await expect(client.listIssueDependencies({ owner: "o", repo: "r", index: 5 })).rejects.toThrow(
       GitLabApiError,

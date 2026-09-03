@@ -295,7 +295,11 @@ credential behavior is a small state machine over a `CandidateCredential[]`
   (`git config get --url=...` / `git credential fill`), so the secret enters
   via subprocess stdout, which the query's `FileSystemReadAccess` source does
   not match — no suppression needed, and the rule keeps guarding the rest of
-  the codebase against genuine backdoor injection.
+  the codebase against genuine backdoor injection. The GitLab client
+  (`gitlab-client.ts`, issue #84) has no multipart path at all — GitLab has
+  no attachment API, its attachment tools fail with a typed error before any
+  request, and its request bodies are always JSON — so it needs neither the
+  designed flow nor a suppression.
 
 `GiteaApiError extends Error` with typed `{status, statusText, body}` fields so
 callers can branch on `err.status === 401` without substring-matching the

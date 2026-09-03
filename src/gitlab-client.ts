@@ -23,7 +23,10 @@
  *   `GitLabTierError` — never a raw API error, and never an auth retry that
  *   would burn a working candidate.
  * - Operations without any GitLab REST API v4 counterpart fail with a typed
- *   `GitLabUnsupportedError` instead of a raw API error.
+ *   `GitLabUnsupportedError` instead of a raw API error. There is also
+ *   deliberately NO multipart-upload path (unlike `GiteaClient`): GitLab has
+ *   no attachment API, so request bodies are always JSON and no file data
+ *   can ever enter a request.
  *
  * SECURITY (AGENTS.md §4): the secret is confined to `CandidateCredential`
  * and rides only inside the `Authorization` header — never in a query string
@@ -76,7 +79,6 @@ import type {
   Release,
   ReplaceTopicsParams,
   Repo,
-  RequestBody,
   SearchIssuesParams,
   TopicList,
   UpdateIssueParams,
@@ -271,7 +273,7 @@ export class GitLabClient {
   private async doRequest<T>(
     method: string,
     path: string,
-    body: RequestBody | undefined,
+    body: Record<string, unknown> | undefined,
     authHeader: string | null,
   ): Promise<T> {
     if (this.baseUrl === null) throw new GitLabNotConfiguredError();
@@ -279,12 +281,14 @@ export class GitLabClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (authHeader) headers["Authorization"] = authHeader;
 
+    // Unlike GiteaClient there is deliberately NO multipart branch: GitLab
+    // has no attachment API, the attachment tools fail with a typed error
+    // before any request, and request bodies are always JSON — so no file
+    // data can ever enter a request here.
     const init: RequestInit = { method, headers };
-    if (body !== undefined && !(body instanceof FormData)) {
+    if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
-    } else if (body !== undefined) {
-      init.body = body;
     }
 
     const response = await fetch(url, init);
@@ -318,7 +322,7 @@ export class GitLabClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: RequestBody,
+    body?: Record<string, unknown>,
   ): Promise<T> {
     if (this.baseUrl === null) throw new GitLabNotConfiguredError();
 
@@ -374,7 +378,7 @@ export class GitLabClient {
     operation: string,
     method: string,
     path: string,
-    body?: RequestBody,
+    body?: Record<string, unknown>,
   ): Promise<T> {
     const hadActive = findActiveCandidateIndex(this.candidates) !== null;
     try {
