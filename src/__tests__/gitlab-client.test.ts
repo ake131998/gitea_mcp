@@ -1029,10 +1029,13 @@ describe("GitLabClient", () => {
 
   it("throws the zero-status error when candidates were exhausted before any attempt", async () => {
     stubFetch(buildResponse({}));
+    // status is still "pending" but the scheme index is out of range —
+    // pickNextAttempt must skip it (credentials.ts) and the loop must end
+    // with the zero-status error (no lastError was ever recorded).
     const client = new GitLabClient({
       baseUrl: "https://gl.example",
       candidates: [
-        { source: "env", secret: "t", schemes: ["bearer"], status: "exhausted", nextSchemeIndex: 1 },
+        { source: "env", secret: "t", schemes: ["bearer"], status: "pending", nextSchemeIndex: 1 },
       ],
     });
     await expect(client.getIssue("o", "r", 1)).rejects.toThrow(
@@ -1134,6 +1137,7 @@ describe("GitLabClient", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(buildResponse([{ id: 11, name: "bug", color: "#ff0000" }]))
+      .mockResolvedValueOnce(buildResponse({ iid: 9 }))
       .mockResolvedValueOnce(buildResponse({ iid: 9 }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
@@ -1151,9 +1155,49 @@ describe("GitLabClient", () => {
       state_event: "reopen",
       labels: "bug",
     });
+
+    // state "closed" maps to the close state_event.
+    await client.updatePullRequest({ owner: "o", repo: "r", index: 9, state: "closed" });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ state_event: "close" });
+
     await expect(
       client.updatePullRequest({ owner: "o", repo: "r", index: 9 }),
     ).rejects.toThrow("GitLab merge request updates require at least one field to change");
+  });
+
+  it("merge_pull_request with Do=merge sends a plain merge", async () => {
+    const fetchMock = stubFetch(buildResponse({ iid: 9, state: "merged" }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.mergePullRequest({
+      owner: "o",
+      repo: "r",
+      index: 9,
+      Do: "merge",
+      MergeTitleField: "title only",
+    });
+    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({
+      merge_commit_message: "title only",
+    });
+  });
+
+  it("remove_topic handles a project response without a topics attribute", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse({ id: 1 })) // read: no topics field
+      .mockResolvedValueOnce(buildResponse({ id: 1, topics: [] })); // write
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.removeTopic("o", "r", "anything");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ topics: [] });
+  });
+
+  it("merge_pull_request omits squash_commit_message when no message is given", async () => {
+    const fetchMock = stubFetch(buildResponse({ iid: 9, state: "merged" }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.mergePullRequest({ owner: "o", repo: "r", index: 9, Do: "squash" });
+    const squashBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(squashBody).toEqual({ squash: true });
+    expect(squashBody).not.toHaveProperty("squash_commit_message");
   });
 
   it("list_releases lists releases with pagination", async () => {

@@ -845,3 +845,32 @@ describe("discoverGitLabConfig / discoverGitLabCredentialsForHost", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("git-config error boundaries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    execCalls = [];
+    mockExec(() => ({ code: 1 }));
+  });
+
+  it("parseGitRemoteUrl returns null when an ssh remote has unsanitizable segments", () => {
+    expect(parseGitRemoteUrl("ssh://git@host/@@@/###", "origin")).toBeNull();
+  });
+
+  it("parseGitRemoteUrl returns null when an https remote has unsanitizable segments", () => {
+    expect(parseGitRemoteUrl("https://host/@@@/###", "origin")).toBeNull();
+  });
+
+  it("parseGitRemoteUrl returns null when an scp remote has unsanitizable segments", () => {
+    expect(parseGitRemoteUrl("git@host:@@@/###", "origin")).toBeNull();
+  });
+
+  it("readOptionalFile rethrows non-ENOENT read errors (EISDIR on the config path)", async () => {
+    // `.git` is a directory (normal repo) and the config path itself is a
+    // directory too — the EISDIR from reading the config must propagate.
+    mockFiles({}, ["/repo/.git/config"]);
+    await expect(discoverConfig({ cwd: "/repo", env: { GITEA_BASE_URL: "https://gitea.example" } })).rejects.toThrow(
+      /EISDIR/,
+    );
+  });
+});

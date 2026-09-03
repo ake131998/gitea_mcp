@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { GiteaClient } from "../gitea-client.js";
 import { GitLabClient } from "../gitlab-client.js";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "../git-config.js";
 
 vi.mock("../gitea-client.js", () => ({
@@ -226,8 +228,62 @@ describe("createServer in gitlab platform mode", () => {
     for (const uri of Object.keys(resources)) {
       const result = await resources[uri].readCallback();
       expect(result.contents[0].uri).toBe(uri);
+      // Real asset content, not the "unavailable in the current build" fallback.
       expect(result.contents[0].text.length).toBeGreaterThan(0);
+      expect(result.contents[0].text).not.toContain("unavailable in the current build");
     }
+  });
+});
+
+describe("GitLab-mode attachment upload (real file through the confinement choke point)", () => {
+  let uploadRoot: string;
+  let savedUploadRoot: string | undefined;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGitLabClient = {};
+    wireMock(mockGitLabClient, GitLabClient);
+    savedUploadRoot = process.env.GITEA_UPLOAD_ROOT;
+    uploadRoot = await mkdtemp(join(tmpdir(), "gitea-mcp-upload-gl-"));
+    process.env.GITEA_UPLOAD_ROOT = uploadRoot;
+  });
+
+  afterEach(async () => {
+    if (savedUploadRoot === undefined) delete process.env.GITEA_UPLOAD_ROOT;
+    else process.env.GITEA_UPLOAD_ROOT = savedUploadRoot;
+    await rm(uploadRoot, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it("create_issue_attachment reads a real file inside the upload root and forwards it", async () => {
+    const { createServer } = await import("../server.js");
+    await writeFile(join(uploadRoot, "log.txt"), new Uint8Array([7, 8, 9]));
+    mockGitLabClient.createIssueAttachment.mockResolvedValue({ id: 5, name: "log.txt" });
+    const server = await createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab");
+    const result = await registeredTools(server as never)["create_issue_attachment"].handler({
+      index: 3,
+      file_path: join(uploadRoot, "log.txt"),
+    });
+    expect(mockGitLabClient.createIssueAttachment).toHaveBeenCalledWith(
+      "o", "r", 3,
+      { data: expect.any(Uint8Array), name: "log.txt" },
+      undefined,
+    );
+    expect(JSON.parse(result.content[0].text)).toEqual({ id: 5, name: "log.txt" });
+  });
+
+  it("create_issue_attachment reports file-not-readable for an unreadable entry", async () => {
+    const { createServer } = await import("../server.js");
+    // A directory named like an allowed upload passes every confinement
+    // check but fails at read time → the generic path-free error.
+    await mkdir(join(uploadRoot, "weird.txt"));
+    const server = await createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab");
+    await expect(
+      registeredTools(server as never)["create_issue_attachment"].handler({
+        index: 3,
+        file_path: join(uploadRoot, "weird.txt"),
+      }),
+    ).rejects.toThrow("Attachment upload rejected: file not readable.");
   });
 });
 
