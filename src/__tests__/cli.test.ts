@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { runServer } from "../server.js";
-import { discoverConfig } from "../git-config.js";
+import { discoverConfig, discoverGitLabConfig } from "../git-config.js";
 
 vi.mock("../server.js", () => ({
   runServer: vi.fn(),
@@ -8,6 +8,7 @@ vi.mock("../server.js", () => ({
 
 vi.mock("../git-config.js", () => ({
   discoverConfig: vi.fn(),
+  discoverGitLabConfig: vi.fn(),
 }));
 
 vi.mock("../skills.js", () => ({
@@ -185,5 +186,106 @@ describe("cli entry point", () => {
     await expect(import("../cli.js")).rejects.toThrow("process.exit(0)");
     expect(outSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("")).toMatch(/gitea-mcp \d+\.\d+\.\d+/);
     expect(runServer).not.toHaveBeenCalled();
+  });
+});
+
+describe("platform selection", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.resetModules();
+    savedEnv = { ...process.env };
+    delete process.env.MCP_PLATFORM;
+    delete process.env.GITLAB_BASE_URL;
+    delete process.env.GITLAB_TOKEN;
+    process.argv = ["node", "cli.js"];
+    exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code})`);
+      }) as never);
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(runServer).mockReset();
+    vi.mocked(discoverConfig).mockReset();
+    vi.mocked(discoverGitLabConfig).mockReset();
+    // Importing cli.js starts the server branch; give both discovery mocks a
+    // safe default so the module under test can resolve its imports.
+    vi.mocked(discoverConfig).mockResolvedValue(null);
+    vi.mocked(discoverGitLabConfig).mockResolvedValue(null);
+    vi.mocked(runServer).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    process.env = savedEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("resolvePlatform defaults to gitea with no env hints", async () => {
+    const { resolvePlatform } = await import("../cli.js");
+    expect(resolvePlatform({})).toBe("gitea");
+  });
+
+  it("resolvePlatform auto-selects gitlab from GITLAB_* env vars", async () => {
+    const { resolvePlatform } = await import("../cli.js");
+    expect(resolvePlatform({ GITLAB_BASE_URL: "https://gl" })).toBe("gitlab");
+    expect(resolvePlatform({ GITLAB_TOKEN: "t" })).toBe("gitlab");
+  });
+
+  it("resolvePlatform keeps gitea when both platforms' env vars are present", async () => {
+    const { resolvePlatform } = await import("../cli.js");
+    expect(resolvePlatform({ GITLAB_BASE_URL: "https://gl", GITEA_TOKEN: "t" })).toBe("gitea");
+  });
+
+  it("an explicit MCP_PLATFORM wins over auto-detection; invalid values throw", async () => {
+    const { resolvePlatform } = await import("../cli.js");
+    expect(resolvePlatform({ MCP_PLATFORM: "gitlab", GITEA_TOKEN: "t" })).toBe("gitlab");
+    expect(resolvePlatform({ MCP_PLATFORM: "gitea", GITLAB_BASE_URL: "https://gl" })).toBe("gitea");
+    expect(() => resolvePlatform({ MCP_PLATFORM: "sourcehut" })).toThrow(
+      "Invalid MCP_PLATFORM 'sourcehut': expected 'gitea' or 'gitlab'.",
+    );
+  });
+
+  it("MCP_PLATFORM=gitlab runs the GitLab discovery and passes the platform to runServer", async () => {
+    process.env.MCP_PLATFORM = "gitlab";
+    vi.mocked(discoverGitLabConfig).mockResolvedValue({
+      baseUrl: "https://gitlab.example",
+      candidates: [],
+      defaultOwner: "o",
+      defaultRepo: "r",
+      remote: "origin",
+      gitAvailable: true,
+    });
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(
+        "https://gitlab.example",
+        [],
+        "o",
+        "r",
+        undefined,
+        true,
+        "gitlab",
+      );
+    });
+    expect(discoverConfig).not.toHaveBeenCalled();
+  });
+
+  it("MCP_PLATFORM=gitlab with no discovery result starts UNCONFIGURED with GitLab guidance", async () => {
+    process.env.MCP_PLATFORM = "gitlab";
+    vi.mocked(discoverGitLabConfig).mockResolvedValue(null);
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab");
+    });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("GITLAB_BASE_URL"));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("configure_gitlab"));
+  });
+
+  it("an invalid MCP_PLATFORM exits 1 with a fatal error", async () => {
+    process.env.MCP_PLATFORM = "sourcehut";
+    await expect(import("../cli.js")).rejects.toThrow("process.exit(1)");
+    expect(errSpy).toHaveBeenCalledWith("Fatal error:", expect.any(Error));
   });
 });

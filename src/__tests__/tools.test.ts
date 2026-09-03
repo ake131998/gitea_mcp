@@ -40,6 +40,10 @@ import {
   EditIssueAttachmentSchema,
   DeleteIssueAttachmentSchema,
   CreateIssueCommentAttachmentSchema,
+  ConfigureGiteaSchema,
+  GiteaStatusSchema,
+  ConfigureGitlabSchema,
+  GitlabStatusSchema,
 } from "../tools.js";
 
 describe("ListIssuesSchema", () => {
@@ -684,5 +688,39 @@ describe("CreateIssueCommentAttachmentSchema", () => {
     });
     expect(result.comment_id).toBe(42);
     expect(result.name).toBe("renamed.png");
+  });
+});
+
+describe("configure/status schemas (per-platform diagnostic pair)", () => {
+  it("GiteaStatusSchema and GitlabStatusSchema take no input", () => {
+    expect(GiteaStatusSchema.safeParse({}).success).toBe(true);
+    expect(GitlabStatusSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("ConfigureGiteaSchema accepts base_url/owner/repo/username", () => {
+    const result = ConfigureGiteaSchema.parse({
+      base_url: "https://gitea.example.com",
+      owner: "o",
+      repo: "r",
+      username: "u",
+    });
+    expect(result).toEqual({
+      base_url: "https://gitea.example.com",
+      owner: "o",
+      repo: "r",
+      username: "u",
+    });
+  });
+
+  it("ConfigureGitlabSchema mirrors the Gitea shape for GitLab hosts", () => {
+    const result = ConfigureGitlabSchema.parse({
+      base_url: "https://gitlab.example.com",
+      owner: "o",
+    });
+    expect(result).toEqual({ base_url: "https://gitlab.example.com", owner: "o" });
+  });
+
+  it("ConfigureGitlabSchema rejects a non-URL base_url", () => {
+    expect(ConfigureGitlabSchema.safeParse({ base_url: "not-a-url" }).success).toBe(false);
   });
 });

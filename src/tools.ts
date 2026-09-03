@@ -390,6 +390,32 @@ export const ConfigureGiteaSchema = z.object({
     ),
 });
 
+export const GitlabStatusSchema = z.object({});
+
+export const ConfigureGitlabSchema = z.object({
+  base_url: z
+    .string()
+    .url()
+    .optional()
+    .describe(
+      "GitLab instance base URL (e.g. https://gitlab.example.com). Providing base_url — even unchanged — triggers credential re-discovery for that host. Use this as the 'I just added a git credential, refresh now' idiom.",
+    ),
+  owner: z
+    .string()
+    .optional()
+    .describe("Default repository owner for tool calls that omit the owner argument."),
+  repo: z
+    .string()
+    .optional()
+    .describe("Default repository name for tool calls that omit the repo argument."),
+  username: z
+    .string()
+    .optional()
+    .describe(
+      "Selects which identity git's credential machinery should use for the host. The lookup is narrowed to this username — no fallback to other identities. Providing username triggers credential re-discovery.",
+    ),
+});
+
 // ── Pull Requests ──
 
 export const ListPullRequestsSchema = z.object({

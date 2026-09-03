@@ -17,10 +17,11 @@
 
 `gitea-mcp` is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that exposes Gitea repository operations as tools. Once connected to an MCP client (Claude Desktop, opencode, Cursor, etc.), an AI assistant can list, create, update, and delete issues, labels, milestones, comments, and topics on your Gitea instance — all through natural language.
 
-The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.22/).
+The server communicates over stdio and wraps the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.22/). **GitLab** (gitlab.com and self-managed) is supported as a second platform — see [GitLab support](#gitlab-support).
 
 ## Features
 
+- **GitLab support** — the same tool set against gitlab.com and self-managed GitLab instances (`MCP_PLATFORM=gitlab` or the `GITLAB_*` env contract)
 - **Full Gitea project management** — issues, labels, milestones, comments, and topics via natural language
 - **Zero-config auto-discovery** — reads `baseUrl`, `owner`, `repo`, and token from the project's git config; one global install serves many repos
 - **Multi-source auth with failover** — tries `[gitea]` config tokens, `GITEA_TOKEN`, then git's own credential machinery (`git credential fill` — store file or OS keychain), advancing automatically on `401`/`403`
@@ -94,6 +95,54 @@ projects. Set them only to override the discovery.
 | `GITEA_DEFAULT_OWNER` | No | Default repository owner — skip passing `owner` on every call |
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
 | `GITEA_UPLOAD_ROOT` | No | Root directory that attachment uploads (`create_issue_attachment` / `create_issue_comment_attachment`) may read from. Defaults to the server's working directory; the resolved path must stay inside this root. |
+| `MCP_PLATFORM` | No | Which platform this server process serves: `gitea` (default) or `gitlab`. Overrides the auto-detection described in [GitLab support](#gitlab-support). |
+| `GITLAB_BASE_URL` | No | GitLab instance URL (e.g. `https://gitlab.example.com`). Auto-detected from the project's git remote when omitted; its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
+| `GITLAB_TOKEN` | No | GitLab API access token. One of several auth candidates; tried after a `.git/config [gitlab]` token and before git's credential machinery. Always sent as `Authorization: Bearer <token>`. |
+| `GITLAB_DEFAULT_OWNER` | No | Default project owner (GitLab mode) — skip passing `owner` on every call |
+| `GITLAB_DEFAULT_REPO` | No | Default project name (GitLab mode) — skip passing `repo` on every call |
+
+### GitLab support
+
+`gitea-mcp` also runs against **GitLab** (gitlab.com and self-managed). One server
+process serves one platform — to use both, register two MCP client entries. The
+platform is selected at startup:
+
+1. `MCP_PLATFORM=gitlab` (or `gitea`) wins when set;
+2. otherwise GitLab is auto-selected when `GITLAB_BASE_URL` or `GITLAB_TOKEN` is set
+   and no `GITEA_*` connection variable is;
+3. the default remains `gitea` (existing configurations behave unchanged).
+
+In GitLab mode the same 68 business tool names run against the GitLab REST API v4
+(`/api/v4`), plus `configure_gitlab` / `gitlab_status` instead of `configure_gitea` /
+`gitea_status`. Discovery mirrors the Gitea contract: a `[gitlab "<baseUrl>"] token`
+git-config entry, `GITLAB_TOKEN`, and `git credential fill` — every credential is
+sent only as `Authorization: Bearer <token>` (never as a URL query parameter).
+
+Coverage notes — operations without a GitLab counterpart fail with a typed
+`GitLabUnsupportedError`, and Premium/Ultimate-gated operations fail with
+`GitLabTierError` (never a raw API error):
+
+- **Fully supported**: issues, comments (list/create), labels, milestones, topics,
+  merge requests, releases (list/create/by-tag), wiki pages, and pipelines (the
+  Actions group: list/get/cancel/rerun).
+- **Tier-gated (GitLab Premium/Ultimate)**: the issue dependency/block tools
+  (`list_issue_dependencies`, `add/remove_issue_dependency`, `list_issue_blocks`,
+  `add/remove_issue_block`, `check_issue_blocked`) — GitLab Free rejects the
+  blocking link types.
+- **Not available on GitLab**: the issue attachment tools; `update_comment` /
+  `delete_comment` (GitLab notes are addressed per-issue); `get_release`,
+  `update_release`, `delete_release` (GitLab releases are addressed by
+  `tag_name` — use `get_release_by_tag`); `rerun_action_run_failed_jobs`;
+  `list_wiki_revisions`; `merge_pull_request` with `rebase` / `rebase-merge`;
+  and the `draft`/`prerelease` release flags, `update_repo`'s `website`/`private`,
+  wiki `message`, and `search_issues` `labels` parameters.
+- **Addressing** follows GitLab conventions: issues and merge requests by
+  project-scoped `iid`, milestones and pipelines by numeric ID, releases by
+  `tag_name`, wiki pages by slug; responses return GitLab's native JSON
+  (`iid`, `web_url`, `references`, …).
+- The bundled action skills and the three guide resources teach Gitea specifics
+  and are served on the Gitea platform only; GitLab guidance ships via the
+  server instructions instead.
 
 ### How auto-discovery works
 
@@ -250,6 +299,11 @@ gitea-mcp
 ```
 
 ## Available Tools
+
+> The tables below describe the tool contract. On the GitLab platform the same
+> 68 business tools run against the GitLab REST API v4 (plus `configure_gitlab` /
+> `gitlab_status` instead of `configure_gitea` / `gitea_status`) — per-tool
+> coverage differences are documented in [GitLab support](#gitlab-support).
 
 ### Issues
 
