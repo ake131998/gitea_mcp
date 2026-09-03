@@ -51,12 +51,21 @@ let mockGitLabClient: MockClient;
 
 interface RegisteredTool {
   description: string;
+  enabled: boolean;
   inputSchema: unknown;
   handler: (input: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>;
 }
 
 function registeredTools(server: { _registeredTools: Record<string, RegisteredTool> }) {
   return server._registeredTools;
+}
+
+/** Sorted names of the tools that are currently enabled (not allowlist-disabled). */
+function enabledToolNames(server: unknown): string[] {
+  return Object.entries(registeredTools(server as never))
+    .filter(([, tool]) => tool.enabled)
+    .map(([name]) => name)
+    .sort();
 }
 
 /** The 72 GitLab-mode tools: 68 shared business tools + resolve_repo/list_my_repos + the GitLab diagnostic pair. */
@@ -233,6 +242,36 @@ describe("createServer in gitlab platform mode", () => {
       expect(result.contents[0].text.length).toBeGreaterThan(0);
       expect(result.contents[0].text).not.toContain("unavailable in the current build");
     }
+  });
+
+  it("allowlist leaves every tool enabled when unset (gitlab platform)", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab");
+    expect(enabledToolNames(server)).toEqual([...EXPECTED_GITLAB_TOOLS].sort());
+  });
+
+  it("allowlist also gates the GitLab diagnostic pair, resolve_repo, and list_my_repos", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab", [
+      "list_issues",
+    ]);
+    expect(enabledToolNames(server)).toEqual(["list_issues"]);
+    const tools = registeredTools(server as never);
+    expect(tools["gitlab_status"].enabled).toBe(false);
+    expect(tools["configure_gitlab"].enabled).toBe(false);
+    expect(tools["resolve_repo"].enabled).toBe(false);
+    expect(tools["list_my_repos"].enabled).toBe(false);
+    // A whitelisted business tool keeps routing to the GitLabClient.
+    mockGitLabClient.listIssues.mockResolvedValue([]);
+    await tools["list_issues"].handler({ owner: "o", repo: "r" });
+    expect(mockGitLabClient.listIssues).toHaveBeenCalled();
+  });
+
+  it("allowlist rejects platform-wrong entries on the gitlab platform", async () => {
+    const { createServer } = await import("../server.js");
+    await expect(
+      createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab", ["gitea_status"]),
+    ).rejects.toThrow("Invalid MCP_TOOL_ALLOWLIST entry 'gitea_status': not a tool on the gitlab platform.");
   });
 });
 

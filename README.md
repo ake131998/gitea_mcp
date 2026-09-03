@@ -86,7 +86,7 @@ node dist/cli.js
 
 All variables are optional — `gitea-mcp` auto-discovers the Gitea instance, repository,
 and token from the project's local git config so a single global install can serve many
-projects. Set them only to override the discovery.
+projects. Set them only to override the discovery or to restrict the tool surface.
 
 | Variable | Required | Description |
 |----------|:--------:|-------------|
@@ -96,6 +96,7 @@ projects. Set them only to override the discovery.
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
 | `GITEA_UPLOAD_ROOT` | No | Root directory that attachment uploads (`create_issue_attachment` / `create_issue_comment_attachment`) may read from. Defaults to the server's working directory; the resolved path must stay inside this root. |
 | `MCP_PLATFORM` | No | Which platform this server process serves: `gitea` (default) or `gitlab`. Overrides the auto-detection described in [GitLab support](#gitlab-support). |
+| `MCP_TOOL_ALLOWLIST` | No | Comma-separated `snake_case` tool names the server may expose (entries are trimmed and matched exactly). Unset or empty keeps every tool available; an entry naming no tool on the active platform aborts startup with a `Fatal error`. |
 | `GITLAB_BASE_URL` | No | GitLab instance URL (e.g. `https://gitlab.example.com`). Auto-detected from the project's git remote when omitted; its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
 | `GITLAB_TOKEN` | No | GitLab API access token. One of several auth candidates; tried after a `.git/config [gitlab]` token and before git's credential machinery. Always sent as `Authorization: Bearer <token>`. |
 | `GITLAB_DEFAULT_OWNER` | No | Default project owner (GitLab mode) — skip passing `owner` on every call |

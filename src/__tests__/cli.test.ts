@@ -46,7 +46,7 @@ describe("cli entry point", () => {
     vi.mocked(runServer).mockResolvedValue(undefined);
     await import("../cli.js");
     await vi.waitFor(() => {
-      expect(runServer).toHaveBeenCalledWith();
+      expect(runServer).toHaveBeenCalledWith(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined);
     });
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("UNCONFIGURED"));
     expect(exitSpy).not.toHaveBeenCalled();
@@ -71,6 +71,8 @@ describe("cli entry point", () => {
         "repo",
         undefined,
         true,
+        undefined,
+        undefined,
       );
     });
     expect(exitSpy).not.toHaveBeenCalled();
@@ -88,7 +90,7 @@ describe("cli entry point", () => {
     vi.mocked(runServer).mockResolvedValue(undefined);
     await import("../cli.js");
     await vi.waitFor(() => {
-      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, false);
+      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, false, undefined, undefined);
     });
   });
 
@@ -103,7 +105,7 @@ describe("cli entry point", () => {
     vi.mocked(runServer).mockResolvedValue(undefined);
     await import("../cli.js");
     await vi.waitFor(() => {
-      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, undefined);
+      expect(runServer).toHaveBeenCalledWith("https://gitea.example", [], "owner", "repo", undefined, undefined, undefined, undefined);
     });
   });
 
@@ -267,6 +269,7 @@ describe("platform selection", () => {
         undefined,
         true,
         "gitlab",
+        undefined,
       );
     });
     expect(discoverConfig).not.toHaveBeenCalled();
@@ -277,7 +280,7 @@ describe("platform selection", () => {
     vi.mocked(discoverGitLabConfig).mockResolvedValue(null);
     await import("../cli.js");
     await vi.waitFor(() => {
-      expect(runServer).toHaveBeenCalledWith(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab");
+      expect(runServer).toHaveBeenCalledWith(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab", undefined);
     });
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("GITLAB_BASE_URL"));
     expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("configure_gitlab"));
@@ -287,5 +290,103 @@ describe("platform selection", () => {
     process.env.MCP_PLATFORM = "sourcehut";
     await expect(import("../cli.js")).rejects.toThrow("process.exit(1)");
     expect(errSpy).toHaveBeenCalledWith("Fatal error:", expect.any(Error));
+  });
+});
+
+describe("tool allowlist env wiring", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.resetModules();
+    savedEnv = { ...process.env };
+    delete process.env.MCP_PLATFORM;
+    delete process.env.MCP_TOOL_ALLOWLIST;
+    delete process.env.GITLAB_BASE_URL;
+    delete process.env.GITLAB_TOKEN;
+    process.argv = ["node", "cli.js"];
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(runServer).mockReset();
+    vi.mocked(discoverConfig).mockReset();
+    vi.mocked(discoverGitLabConfig).mockReset();
+    vi.mocked(discoverConfig).mockResolvedValue(null);
+    vi.mocked(discoverGitLabConfig).mockResolvedValue(null);
+    vi.mocked(runServer).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    process.env = savedEnv;
+    vi.restoreAllMocks();
+  });
+
+  it("resolveToolAllowlist returns undefined when unset, empty, or whitespace-only", async () => {
+    const { resolveToolAllowlist } = await import("../cli.js");
+    expect(resolveToolAllowlist({})).toBeUndefined();
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: "" })).toBeUndefined();
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: "   " })).toBeUndefined();
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: " , " })).toBeUndefined();
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: ",," })).toBeUndefined();
+  });
+
+  it("resolveToolAllowlist splits on commas and trims entries", async () => {
+    const { resolveToolAllowlist } = await import("../cli.js");
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: "list_issues" })).toEqual(["list_issues"]);
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: " list_issues ,  get_issue " })).toEqual([
+      "list_issues",
+      "get_issue",
+    ]);
+    expect(resolveToolAllowlist({ MCP_TOOL_ALLOWLIST: "list_issues,," })).toEqual(["list_issues"]);
+  });
+
+  it("forwards the parsed allowlist to runServer on the gitea platform", async () => {
+    process.env.MCP_TOOL_ALLOWLIST = "list_issues, get_issue";
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        ["list_issues", "get_issue"],
+      );
+    });
+  });
+
+  it("forwards the parsed allowlist to runServer on the gitlab platform", async () => {
+    process.env.MCP_PLATFORM = "gitlab";
+    process.env.MCP_TOOL_ALLOWLIST = "list_issues";
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "gitlab",
+        ["list_issues"],
+      );
+    });
+  });
+
+  it("an unknown entry surfaces as Fatal error + exit 1 when runServer rejects", async () => {
+    exitSpy.mockImplementation((() => undefined) as never);
+    process.env.MCP_TOOL_ALLOWLIST = "no_such_tool";
+    vi.mocked(runServer).mockRejectedValue(
+      new Error("Invalid MCP_TOOL_ALLOWLIST entry 'no_such_tool': not a tool on the gitea platform."),
+    );
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(errSpy).toHaveBeenCalledWith("Fatal error:", expect.any(Error));
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
   });
 });
