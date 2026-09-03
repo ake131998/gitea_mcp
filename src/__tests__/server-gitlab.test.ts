@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { GiteaClient } from "../gitea-client.js";
 import { GitLabClient } from "../gitlab-client.js";
+import { readFile } from "node:fs/promises";
 import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "../git-config.js";
 
 vi.mock("../gitea-client.js", () => ({
@@ -9,6 +10,16 @@ vi.mock("../gitea-client.js", () => ({
 vi.mock("../gitlab-client.js", () => ({
   GitLabClient: vi.fn(),
 }));
+
+// Wrap (not replace) readFile: the default implementation delegates to the
+// real one so the attachment-confinement and asset paths keep working; the
+// resolve_repo test overrides it per-call.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const wrappedReadFile = vi.fn(async (...args: Parameters<typeof actual.readFile>) =>
+    actual.readFile(...args));
+  return { ...actual, readFile: wrappedReadFile };
+});
 
 /** Same method surface server.ts wires for either client (union type). */
 const CLIENT_METHODS = [
@@ -181,6 +192,18 @@ describe("createServer in gitlab platform mode", () => {
     ).rejects.toThrow("At least one of base_url, owner, repo, or username must be provided.");
   });
 
+  it("resolve_repo errors when the git config has no parseable remote", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, undefined, undefined, undefined, undefined, "gitlab");
+    // Two readFile calls happen: the `.git` probe (ENOENT → conventional
+    // path) and the git-config read — queue an empty payload for each so
+    // parseRemotes sees a remote-less config.
+    vi.mocked(readFile).mockResolvedValueOnce("" as never).mockResolvedValueOnce("" as never);
+    await expect(
+      registeredTools(server as never)["resolve_repo"].handler({ path: "/repo-without-remotes" }),
+    ).rejects.toThrow("No parseable git remotes found");
+  });
+
   it("registers no Gitea guide resources on GitLab (they document Gitea object shapes)", async () => {
     const { createServer } = await import("../server.js");
     const gitlabServer = await createServer("https://gl", undefined, undefined, undefined, undefined, undefined, "gitlab");
@@ -189,6 +212,22 @@ describe("createServer in gitlab platform mode", () => {
       Object.keys((s as { _registeredResources: Record<string, unknown> })._registeredResources);
     expect(resourcesOf(gitlabServer)).toEqual([]);
     expect(resourcesOf(giteaServer)).toHaveLength(3);
+  });
+
+  it("serves the Gitea guide resources through the registered read callbacks", async () => {
+    const { createServer } = await import("../server.js");
+    const giteaServer = await createServer("https://g");
+    const resources = (giteaServer as unknown as {
+      _registeredResources: Record<
+        string,
+        { readCallback: () => Promise<{ contents: { uri: string; text: string }[] }> }
+      >;
+    })._registeredResources;
+    for (const uri of Object.keys(resources)) {
+      const result = await resources[uri].readCallback();
+      expect(result.contents[0].uri).toBe(uri);
+      expect(result.contents[0].text.length).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -209,5 +248,83 @@ describe("createServer default platform stays gitea", () => {
     expect(tools).not.toContain("configure_gitlab");
     expect(tools).not.toContain("gitlab_status");
     expect(GitLabClient).not.toHaveBeenCalled();
+  });
+});
+
+describe("GitLab-mode handler smoke (every shared tool routes and serializes)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGitLabClient = {};
+    wireMock(mockGitLabClient, GitLabClient);
+    // One generic payload satisfies every pass-through handler; handlers only
+    // JSON-serialize whatever the client returns.
+    for (const m of CLIENT_METHODS) mockGitLabClient[m]?.mockResolvedValue({ ok: true });
+    mockGitLabClient.listActionRuns.mockResolvedValue({ workflow_runs: [], count: 0 });
+    mockGitLabClient.isPullMerged.mockResolvedValue(false);
+    mockGitLabClient.getCredentialStatus.mockReturnValue({
+      configured: true,
+      baseUrl: "https://gl",
+      candidates: [],
+      activeIndex: null,
+      totalCandidates: 0,
+    });
+  });
+
+  it("every shared business handler resolves through the GitLabClient", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, "o", "r", undefined, undefined, "gitlab");
+    const tools = registeredTools(server as never);
+    // configure_gitlab needs a discovery injection (covered above); the
+    // status pair is covered above too. resolve_repo touches the real
+    // filesystem and is platform-independent (covered by server.test.ts).
+    const shared = Object.keys(tools).filter(
+      (t) =>
+        t !== "configure_gitlab" && t !== "gitlab_status" && t !== "resolve_repo",
+    );
+    const richInput = {
+      owner: "o",
+      repo: "r",
+      index: 1,
+      id: 1,
+      attachment_id: 1,
+      comment_id: 1,
+      runId: 1,
+      tag: "v1",
+      pageName: "Home",
+      topic: "t",
+      page: 1,
+      limit: 1,
+      title: "t",
+      body: "b",
+      content: "c",
+      name: "n",
+      description: "d",
+      color: "#ff0000",
+      labels: "a",
+      state: "open",
+      query: "q",
+      type: "issues",
+      file_path: "definitely/missing/file.bin",
+    };
+    for (const name of shared) {
+      // The two attachment-upload handlers throw at the confinement boundary
+      // for the bogus path (readUploadFile) — rejecting is their covered
+      // outcome; every other handler must resolve with MCP content.
+      if (name === "create_issue_attachment" || name === "create_issue_comment_attachment") {
+        await expect(tools[name].handler(richInput as Record<string, unknown>)).rejects.toThrow(
+          /Attachment upload rejected/,
+        );
+      } else {
+        await expect(
+          tools[name].handler(richInput as Record<string, unknown>),
+        ).resolves.toHaveProperty("content");
+      }
+    }
+    expect(shared.length).toBeGreaterThan(60);
+    // Every shared handler must have delegated to the mocked GitLabClient.
+    const touched = CLIENT_METHODS.filter(
+      (m) => (mockGitLabClient[m] as ReturnType<typeof vi.fn>).mock.calls.length > 0,
+    );
+    expect(touched.length).toBeGreaterThan(40);
   });
 });

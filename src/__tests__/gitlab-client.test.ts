@@ -1009,4 +1009,174 @@ describe("GitLabClient", () => {
     const second = fetchMock.mock.calls[1];
     expect((second[1] as RequestInit).headers).toMatchObject({ Authorization: "Bearer t" });
   });
+
+  // ── Coverage completion: branches not exercised by the groups above ──
+
+  it("configure({ baseUrl }) re-normalizes the base URL; isConfigured/getBaseUrl report it", async () => {
+    const client = new GitLabClient({});
+    expect(client.isConfigured()).toBe(false);
+    expect(client.getBaseUrl()).toBeNull();
+    client.configure({ baseUrl: "https://gl.example/" });
+    expect(client.isConfigured()).toBe(true);
+    expect(client.getBaseUrl()).toBe("https://gl.example");
+  });
+
+  it("parses an empty 200 body as undefined", async () => {
+    stubFetch(buildResponse("", 200, "OK"));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.getIssue("o", "r", 1)).resolves.toBeUndefined();
+  });
+
+  it("throws the zero-status error when candidates were exhausted before any attempt", async () => {
+    stubFetch(buildResponse({}));
+    const client = new GitLabClient({
+      baseUrl: "https://gl.example",
+      candidates: [
+        { source: "env", secret: "t", schemes: ["bearer"], status: "exhausted", nextSchemeIndex: 1 },
+      ],
+    });
+    await expect(client.getIssue("o", "r", 1)).rejects.toThrow(
+      "all credential candidates exhausted",
+    );
+  });
+
+  it("create_issue resolves an assignees array to assignee_ids", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse([{ id: 42, username: "alice" }]))
+      .mockResolvedValueOnce(buildResponse([{ id: 43, username: "bob" }]))
+      .mockResolvedValueOnce(buildResponse({ iid: 7 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.createIssue({ owner: "o", repo: "r", title: "T", assignees: ["alice", "bob"] });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
+      title: "T",
+      assignee_ids: [42, 43],
+    });
+  });
+
+  it("update_issue resolves label IDs to names", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse([{ id: 11, name: "bug", color: "#ff0000" }]))
+      .mockResolvedValueOnce(buildResponse({ iid: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.updateIssue({ owner: "o", repo: "r", index: 5, labels: [11] });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ labels: "bug" });
+  });
+
+  it("remove_issue_block resolves the blocks link ID then deletes it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        buildResponse([
+          { issue_link_id: 31, link_type: "is_blocked_by", iid: 7, project_id: 1 },
+          { issue_link_id: 32, link_type: "blocks", iid: 8, project_id: 1 },
+        ]),
+      )
+      .mockResolvedValueOnce(buildResponse(undefined, 204))
+      .mockResolvedValueOnce(buildResponse({ iid: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.removeIssueBlock({ owner: "o", repo: "r", index: 5, depIndex: 8 });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://gl.example/api/v4/projects/o%2Fr/issues/5/links/32",
+    );
+  });
+
+  it("remove_issue_label errors 404 when the label ID is unknown", async () => {
+    stubFetch(buildResponse([{ id: 7, name: "bug", color: "#ff0000" }]));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.removeIssueLabel("o", "r", 5, 99)).rejects.toThrow(
+      "label id 99 not found in project o/r",
+    );
+  });
+
+  it("list_pull_requests maps recentupdate/leastupdate and tolerates no sort", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse([]))
+      .mockResolvedValueOnce(buildResponse([]))
+      .mockResolvedValueOnce(buildResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+
+    await client.listPullRequests({ owner: "o", repo: "r", sort: "recentupdate" });
+    expect(fetchMock.mock.calls[0][0]).toContain("order_by=updated_at&sort=desc");
+
+    await client.listPullRequests({ owner: "o", repo: "r", sort: "leastupdate" });
+    expect(fetchMock.mock.calls[1][0]).toContain("order_by=updated_at&sort=asc");
+
+    await client.listPullRequests({ owner: "o", repo: "r" });
+    expect(fetchMock.mock.calls[2][0]).not.toContain("order_by=");
+  });
+
+  it("create_pull_request resolves label IDs to names", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse([{ id: 11, name: "bug", color: "#ff0000" }]))
+      .mockResolvedValueOnce(buildResponse({ iid: 9 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.createPullRequest({
+      owner: "o",
+      repo: "r",
+      title: "T",
+      head: "f",
+      base: "main",
+      labels: [11],
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({ labels: "bug" });
+  });
+
+  it("update_pull_request maps fields and rejects an empty change set", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse([{ id: 11, name: "bug", color: "#ff0000" }]))
+      .mockResolvedValueOnce(buildResponse({ iid: 9 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.updatePullRequest({
+      owner: "o",
+      repo: "r",
+      index: 9,
+      state: "open",
+      labels: [11],
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://gl.example/api/v4/projects/o%2Fr/merge_requests/9",
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toMatchObject({
+      state_event: "reopen",
+      labels: "bug",
+    });
+    await expect(
+      client.updatePullRequest({ owner: "o", repo: "r", index: 9 }),
+    ).rejects.toThrow("GitLab merge request updates require at least one field to change");
+  });
+
+  it("list_releases lists releases with pagination", async () => {
+    const fetchMock = stubFetch(buildResponse([{ tag_name: "v1" }]));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.listReleases({ owner: "o", repo: "r", page: 1, limit: 20 });
+    expect(lastCall(fetchMock).url).toBe(
+      "https://gl.example/api/v4/projects/o%2Fr/releases?page=1&per_page=20",
+    );
+  });
+
+  it("getRepo fetches the project", async () => {
+    stubFetch(buildResponse({ id: 1 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.getRepo("o", "r")).resolves.toMatchObject({ id: 1 });
+  });
+
+  it("update_wiki_page rejects the message parameter", async () => {
+    const fetchMock = stubFetch(buildResponse({}));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(
+      client.updateWikiPage({ owner: "o", repo: "r", pageName: "Home", content: "c", message: "m" }),
+    ).rejects.toThrow(GitLabUnsupportedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
