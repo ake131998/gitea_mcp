@@ -89,7 +89,7 @@ node dist/cli.js
 | 变量 | 必填 | 说明 |
 |------|:----:|------|
 | `GITEA_BASE_URL` | 否 | Gitea 实例地址（如 `https://gitea.example.com`）。未设置时从项目 git 远程地址自动推导。 |
-| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `.git/config [gitea]` 令牌之后、git 凭据机制之前（见[令牌发现](#令牌发现)）。 |
+| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `GITEA_REPO_URL` userinfo 与 `.git/config [gitea]` 令牌之后、git 凭据机制之前（见[令牌发现](#令牌发现)）。 |
 | `GITEA_REPO_URL` | 否 | 一个自包含的带凭据克隆地址——`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`——用单个变量同时提供实例地址、默认 owner/repo 和一个认证候选。各部分分别位于其显式覆盖变量（`GITEA_BASE_URL`、`GITEA_DEFAULT_OWNER`、`GITEA_DEFAULT_REPO`）之下、git 远程之上；纯内存解析，git 不可用时同样生效，内嵌密钥绝不会出现在任何输出中。 |
 | `GITEA_DEFAULT_OWNER` | 否 | 默认仓库所有者，免去每次传入 `owner` 参数 |
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
@@ -97,7 +97,7 @@ node dist/cli.js
 | `MCP_PLATFORM` | 否 | 当前服务进程服务的平台：`gitea`（默认）或 `gitlab`。设置后优先于 [GitLab 支持](#gitlab-支持)中描述的自动判定。 |
 | `MCP_TOOL_ALLOWLIST` | 否 | 服务器允许暴露的工具名列表，逗号分隔的 `snake_case` 名称（条目去除首尾空白后精确匹配）。未设置或为空时所有工具可用；条目在当前平台上没有对应工具时启动即报 `Fatal error` 退出。 |
 | `GITLAB_BASE_URL` | 否 | GitLab 实例地址（如 `https://gitlab.example.com`）。未设置时从项目 git 远程地址自动推导；其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
-| `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
+| `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `GITLAB_REPO_URL` userinfo 与 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
 | `GITLAB_REPO_URL` | 否 | `GITEA_REPO_URL` 的 GitLab 对应变量——一个带凭据的克隆地址，同时提供实例地址、默认 owner/project 和一个 `Bearer` 认证候选。其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
 | `GITLAB_DEFAULT_OWNER` | 否 | 默认项目所有者（GitLab 模式），免去每次传入 `owner` 参数 |
 | `GITLAB_DEFAULT_REPO` | 否 | 默认项目名称（GitLab 模式），免去每次传入 `repo` 参数 |

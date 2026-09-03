@@ -100,14 +100,15 @@ if (head === "init") {
   // machinery (`.git/config` remotes via file reads; tokens/credentials via
   // `git config` / `git credential fill` subprocesses — never in-process
   // parsing of secret-bearing files). Discovery collects ALL credential
-  // candidates (config token, env token, git credential helper) rather than
-  // picking one, so the client can fall back across them when one scheme is
-  // rejected (e.g. an account password that is not a PAT). When the git
-  // binary is unavailable, discovery degrades to env-token / anonymous mode
-  // and the status tool reports gitAvailable=false as fix guidance. When
-  // neither env nor any git remote provides a baseUrl, the server starts in
-  // an UNCONFIGURED state — business tools return NotConfiguredError on
-  // invocation, and the configure tool enables runtime configuration.
+  // candidates (repo URL, config token, env token, git credential helper)
+  // rather than picking one, so the client can fall back across them when
+  // one scheme is rejected (e.g. an account password that is not a PAT).
+  // When the git binary is unavailable, discovery degrades to the env
+  // sources (repo URL / env token) / anonymous mode and the status tool
+  // reports gitAvailable=false as fix guidance. When neither env nor any
+  // git remote provides a baseUrl, the server starts in an UNCONFIGURED
+  // state — business tools return NotConfiguredError on invocation, and the
+  // configure tool enables runtime configuration.
   //
   // One process serves one platform: MCP_PLATFORM (or the GITLAB_*/GITEA_*
   // env mix) selects which discovery pipeline runs and which client the

@@ -485,6 +485,10 @@ export function parseRepoUrl(raw: string): ParsedRepoUrl | null {
   try {
     const u = parsed.username ? decodeURIComponent(parsed.username) : undefined;
     const p = parsed.password ? decodeURIComponent(parsed.password) : undefined;
+    // Decoded userinfo flows into the Authorization header — reject control
+    // characters outright (header injection / invalid-header errors), the
+    // same reject-don't-strip policy as `assertCredentialAttribute`.
+    if (/[\r\n\0]/.test(u ?? "") || /[\r\n\0]/.test(p ?? "")) return null;
     if (p !== undefined) {
       username = u;
       secret = p;

@@ -91,7 +91,7 @@ projects. Set them only to override the discovery or to restrict the tool surfac
 | Variable | Required | Description |
 |----------|:--------:|-------------|
 | `GITEA_BASE_URL` | No | Gitea instance URL (e.g. `https://gitea.example.com`). Auto-detected from the project's git remote when omitted. |
-| `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after a `.git/config [gitea]` token and before git's credential machinery (see [Token discovery](#token-discovery)). |
+| `GITEA_TOKEN` | No | Gitea API access token. One of several auth candidates; tried after the `GITEA_REPO_URL` userinfo and a `.git/config [gitea]` token, and before git's credential machinery (see [Token discovery](#token-discovery)). |
 | `GITEA_REPO_URL` | No | One self-contained credentialed clone URL — `https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git` — carrying the instance URL, default owner/repo, and an auth candidate in a single variable. Each part sits below its explicit override (`GITEA_BASE_URL`, `GITEA_DEFAULT_OWNER`, `GITEA_DEFAULT_REPO`) and above the git remote; parsed in-memory, works without git, and the embedded secret never appears in any output. |
 | `GITEA_DEFAULT_OWNER` | No | Default repository owner — skip passing `owner` on every call |
 | `GITEA_DEFAULT_REPO` | No | Default repository name — skip passing `repo` on every call |
@@ -99,7 +99,7 @@ projects. Set them only to override the discovery or to restrict the tool surfac
 | `MCP_PLATFORM` | No | Which platform this server process serves: `gitea` (default) or `gitlab`. Overrides the auto-detection described in [GitLab support](#gitlab-support). |
 | `MCP_TOOL_ALLOWLIST` | No | Comma-separated `snake_case` tool names the server may expose (entries are trimmed and matched exactly). Unset or empty keeps every tool available; an entry naming no tool on the active platform aborts startup with a `Fatal error`. |
 | `GITLAB_BASE_URL` | No | GitLab instance URL (e.g. `https://gitlab.example.com`). Auto-detected from the project's git remote when omitted; its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
-| `GITLAB_TOKEN` | No | GitLab API access token. One of several auth candidates; tried after a `.git/config [gitlab]` token and before git's credential machinery. Always sent as `Authorization: Bearer <token>`. |
+| `GITLAB_TOKEN` | No | GitLab API access token. One of several auth candidates; tried after the `GITLAB_REPO_URL` userinfo and a `.git/config [gitlab]` token, and before git's credential machinery. Always sent as `Authorization: Bearer <token>`. |
 | `GITLAB_REPO_URL` | No | GitLab counterpart of `GITEA_REPO_URL` — one credentialed clone URL supplying the instance URL, default owner/project, and a `Bearer` auth candidate. Its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
 | `GITLAB_DEFAULT_OWNER` | No | Default project owner (GitLab mode) — skip passing `owner` on every call |
 | `GITLAB_DEFAULT_REPO` | No | Default project name (GitLab mode) — skip passing `repo` on every call |

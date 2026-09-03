@@ -946,6 +946,12 @@ describe("parseRepoUrl", () => {
     expect(parseRepoUrl("https://user:%zz@gitea.example/owner/repo.git")).toBeNull();
   });
 
+  it("rejects control characters in the decoded userinfo (header-injection guard)", () => {
+    expect(parseRepoUrl("https://user:a%0D%0AX-Evil:@gitea.example/owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("https://us%0Ar:secret@gitea.example/owner/repo.git")).toBeNull();
+    expect(parseRepoUrl("https://a%00b:secret@gitea.example/owner/repo.git")).toBeNull();
+  });
+
   it("never echoes the raw input in a thrown message (it returns null instead)", () => {
     const raw = "https://alice:s3cret@gitea.example/!!!/repo.git";
     expect(() => parseRepoUrl(raw)).not.toThrow();
