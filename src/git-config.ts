@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join, isAbsolute, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import {
+  type AuthScheme,
   type CandidateCredential,
   type CredentialDiscoveryResult,
+  type CredentialSource,
   orderSchemesForCredentialStore,
 } from "./credentials.js";
 
@@ -60,6 +62,52 @@ export interface DiscoverCredentialsForHostResult {
   candidates: CandidateCredential[];
   gitAvailable: boolean;
 }
+
+/**
+ * Platform-specific knobs for the three-source credential discovery. Each
+ * platform keeps its own env var, git config section, source tag, and auth
+ * scheme set so a Gitea env token can never be collected for a GitLab host
+ * (and vice versa). The discovery pipeline itself (git subprocesses + remote
+ * parsing) is shared.
+ */
+interface PlatformCredentialSources {
+  /** Git config section holding the instance token (`[<section> "<url>"] token`). */
+  configSection: "gitea" | "gitlab";
+  /** Env var holding a fallback token. */
+  envTokenVar: "GITEA_TOKEN" | "GITLAB_TOKEN";
+  /** `CredentialSource` recorded on config-token candidates. */
+  configSource: CredentialSource;
+  /** Scheme list for config/env token candidates. */
+  tokenSchemes: AuthScheme[];
+  /** Scheme list for credential-store entries returning only a username. */
+  storeUsernameOnlySchemes: AuthScheme[];
+  /**
+   * Scheme order for credential-store entries holding a password. Gitea uses
+   * the username heuristic (`orderSchemesForCredentialStore`); GitLab's API
+   * documents only token headers, so it is `bearer`-only regardless of user.
+   */
+  storePasswordSchemes: (username?: string) => AuthScheme[];
+}
+
+/** Gitea discovery sources — the historical behavior, unchanged. */
+const GITEA_SOURCES: PlatformCredentialSources = {
+  configSection: "gitea",
+  envTokenVar: "GITEA_TOKEN",
+  configSource: "gitea-config",
+  tokenSchemes: ["token"],
+  storeUsernameOnlySchemes: ["token", "basic"],
+  storePasswordSchemes: orderSchemesForCredentialStore,
+};
+
+/** GitLab discovery sources — `[gitlab]` config key, `GITLAB_TOKEN` env, Bearer schemes. */
+const GITLAB_SOURCES: PlatformCredentialSources = {
+  configSection: "gitlab",
+  envTokenVar: "GITLAB_TOKEN",
+  configSource: "gitlab-config",
+  tokenSchemes: ["bearer"],
+  storeUsernameOnlySchemes: ["bearer"],
+  storePasswordSchemes: () => ["bearer"],
+};
 
 /**
  * Upper bound for one git subprocess invocation. A hung credential helper
@@ -134,10 +182,11 @@ function execGit(
 }
 
 /**
- * Read the `[gitea "<url>"] token` / bare `[gitea] token` value through git's
- * own config machinery: `git config get --url=<baseUrl> gitea.token`. The
- * `--url` lookup returns the best URL-matching subsection and falls back to
- * the bare `[gitea]` section natively (git-config(1)), while reading the
+ * Read the `[gitea "<url>"] token` / `[gitlab "<url>"] token` value (or the
+ * bare `[<section>] token` form) through git's own config machinery:
+ * `git config get --url=<baseUrl> <section>.token`. The `--url` lookup
+ * returns the best URL-matching subsection and falls back to the bare
+ * `[<section>]` section natively (git-config(1)), while reading the
  * secret via git's stdout instead of a `node:fs` file read (which was the
  * CodeQL `js/file-access-to-http` source). Requires git ≥ 2.46 (`config get`).
  *
@@ -146,16 +195,21 @@ function execGit(
  * slash matches a baseUrl without one (the old in-process parser did not).
  * Exit-code caveat: on git < 2.46 the unknown `get` subcommand also exits 1 —
  * indistinguishable from "key not present" — so the config-token source fails
- * silently there (credential `fill` still works; only `[gitea]` tokens are
- * lost). This cannot be discriminated without stderr parsing, which is
- * deliberately avoided; the requirement is documented in the README instead.
+ * silently there (credential `fill` still works; only `[gitea]`/`[gitlab]`
+ * tokens are lost). This cannot be discriminated without stderr parsing,
+ * which is deliberately avoided; the requirement is documented in the README
+ * instead.
  */
 async function gitConfigTokenForUrl(
   baseUrl: string,
+  section: "gitea" | "gitlab",
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<{ unavailable: boolean; token?: string }> {
-  const result = await execGit(["config", "get", `--url=${baseUrl}`, "gitea.token"], { cwd, env });
+  const result = await execGit(
+    ["config", "get", `--url=${baseUrl}`, `${section}.token`],
+    { cwd, env },
+  );
   if (result.unavailable) return { unavailable: true };
   // Exit 1 is the documented "key not present"; any other non-zero exit is
   // treated the same way (no token from this source) rather than crashing
@@ -252,20 +306,25 @@ async function gitCredentialFill(input: {
 }
 
 /**
- * Build a `CandidateCredential` from a `git credential fill` result,
- * preserving the store conventions of the old in-process parser:
- * - password present → secret = password, username preserved (basic auth
- *   needs it); scheme order from `orderSchemesForCredentialStore`.
+ * Build a `CandidateCredential` from a `git credential fill` result.
+ * Scheme selection comes from the platform's `PlatformCredentialSources`:
+ * - password present → secret = password, username preserved; scheme order
+ *   from `storePasswordSchemes` (the Gitea username heuristic preserves the
+ *   store conventions of the old in-process parser).
  * - username only (a helper returned just the identity — or a token stored
- *   in the username position) → secret = username, `token` scheme first.
+ *   in the username position) → secret = username, `storeUsernameOnlySchemes`.
  */
-function candidateFromFill(username: string | undefined, password: string | undefined): CandidateCredential | null {
+function candidateFromFill(
+  username: string | undefined,
+  password: string | undefined,
+  sources: PlatformCredentialSources,
+): CandidateCredential | null {
   if (password) {
     return {
       source: "credential-store",
       username,
       secret: password,
-      schemes: orderSchemesForCredentialStore(username),
+      schemes: sources.storePasswordSchemes(username),
       status: "pending",
       nextSchemeIndex: 0,
     };
@@ -274,7 +333,7 @@ function candidateFromFill(username: string | undefined, password: string | unde
     return {
       source: "credential-store",
       secret: username,
-      schemes: ["token", "basic"],
+      schemes: sources.storeUsernameOnlySchemes,
       status: "pending",
       nextSchemeIndex: 0,
     };
@@ -469,6 +528,26 @@ export async function resolveGitConfigPath(cwd: string): Promise<string> {
 export async function discoverCredentialsForHost(
   options: DiscoverCredentialsForHostOptions,
 ): Promise<DiscoverCredentialsForHostResult> {
+  return discoverCredentialsForHostCore(options, GITEA_SOURCES);
+}
+
+/**
+ * GitLab counterpart of `discoverCredentialsForHost`: same three-source
+ * pipeline, but the config token comes from `[gitlab "<baseUrl>"] token`
+ * (`git config get --url=<baseUrl> gitlab.token`), the env token from
+ * `GITLAB_TOKEN`, and every candidate carries only the GitLab-documented
+ * `bearer` scheme — a Gitea env/config token is never collected here.
+ */
+export async function discoverGitLabCredentialsForHost(
+  options: DiscoverCredentialsForHostOptions,
+): Promise<DiscoverCredentialsForHostResult> {
+  return discoverCredentialsForHostCore(options, GITLAB_SOURCES);
+}
+
+async function discoverCredentialsForHostCore(
+  options: DiscoverCredentialsForHostOptions,
+  sources: PlatformCredentialSources,
+): Promise<DiscoverCredentialsForHostResult> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
 
@@ -483,28 +562,28 @@ export async function discoverCredentialsForHost(
   let gitAvailable = true;
 
   if (parsed) {
-    // Source 1: [gitea "<baseUrl>"] token / bare [gitea] token via git config.
-    const configToken = await gitConfigTokenForUrl(options.baseUrl, cwd, env);
+    // Source 1: [<section> "<baseUrl>"] token / bare [<section>] token via git config.
+    const configToken = await gitConfigTokenForUrl(options.baseUrl, sources.configSection, cwd, env);
     if (configToken.unavailable) {
       gitAvailable = false;
     } else if (configToken.token) {
       candidates.push({
-        source: "gitea-config",
+        source: sources.configSource,
         secret: configToken.token,
-        schemes: ["token"],
+        schemes: sources.tokenSchemes,
         status: "pending",
         nextSchemeIndex: 0,
       });
     }
   }
 
-  // Source 2: GITEA_TOKEN env (always collected, regardless of host).
-  const envToken = env.GITEA_TOKEN;
+  // Source 2: <ENV>_TOKEN env (always collected, regardless of host).
+  const envToken = env[sources.envTokenVar];
   if (envToken) {
     candidates.push({
       source: "env",
       secret: envToken,
-      schemes: ["token"],
+      schemes: sources.tokenSchemes,
       status: "pending",
       nextSchemeIndex: 0,
     });
@@ -528,7 +607,7 @@ export async function discoverCredentialsForHost(
       // Strict username filter — no fallback to other identities.
       const identityMatches =
         options.username === undefined || fill.username === options.username;
-      const candidate = candidateFromFill(fill.username, fill.password);
+      const candidate = candidateFromFill(fill.username, fill.password, sources);
       if (identityMatches && candidate) candidates.push(candidate);
     }
   }
@@ -553,9 +632,47 @@ export async function discoverCredentialsForHost(
  * taken from the selected remote.
  */
 export async function discoverConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
+  return discoverConfigCore(options, GITEA_ENV, GITEA_SOURCES);
+}
+
+/** Env-var names a platform's `discoverConfig` reads. */
+interface PlatformDiscoveryEnv {
+  baseUrlVar: "GITEA_BASE_URL" | "GITLAB_BASE_URL";
+  defaultOwnerVar: "GITEA_DEFAULT_OWNER" | "GITLAB_DEFAULT_OWNER";
+  defaultRepoVar: "GITEA_DEFAULT_REPO" | "GITLAB_DEFAULT_REPO";
+}
+
+const GITEA_ENV: PlatformDiscoveryEnv = {
+  baseUrlVar: "GITEA_BASE_URL",
+  defaultOwnerVar: "GITEA_DEFAULT_OWNER",
+  defaultRepoVar: "GITEA_DEFAULT_REPO",
+};
+
+const GITLAB_ENV: PlatformDiscoveryEnv = {
+  baseUrlVar: "GITLAB_BASE_URL",
+  defaultOwnerVar: "GITLAB_DEFAULT_OWNER",
+  defaultRepoVar: "GITLAB_DEFAULT_REPO",
+};
+
+/**
+ * GitLab counterpart of `discoverConfig`: `GITLAB_BASE_URL` /
+ * `GITLAB_DEFAULT_OWNER` / `GITLAB_DEFAULT_REPO` (env) override the selected
+ * remote, and credentials come from the GitLab-only sources (see
+ * `discoverGitLabCredentialsForHost`). Remote selection is shared
+ * (`upstream` → `origin` → first).
+ */
+export async function discoverGitLabConfig(options: DiscoverOptions = {}): Promise<CredentialDiscoveryResult | null> {
+  return discoverConfigCore(options, GITLAB_ENV, GITLAB_SOURCES);
+}
+
+async function discoverConfigCore(
+  options: DiscoverOptions,
+  platformEnv: PlatformDiscoveryEnv,
+  sources: PlatformCredentialSources,
+): Promise<CredentialDiscoveryResult | null> {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const envBaseUrl = env.GITEA_BASE_URL;
+  const envBaseUrl = env[platformEnv.baseUrlVar];
 
   const gitConfigPath = await resolveGitConfigPath(cwd);
   const gitConfigContent = await readOptionalFile(gitConfigPath);
@@ -566,17 +683,15 @@ export async function discoverConfig(options: DiscoverOptions = {}): Promise<Cre
   if (!baseUrl) return null;
 
   const repoPath = selected ? `${selected.owner}/${selected.repo}` : undefined;
-  const { candidates, gitAvailable } = await discoverCredentialsForHost({
-    baseUrl,
-    cwd,
-    env,
-    repoPath,
-  });
+  const { candidates, gitAvailable } = await discoverCredentialsForHostCore(
+    { baseUrl, cwd, env, repoPath },
+    sources,
+  );
 
   return {
     baseUrl,
-    defaultOwner: env.GITEA_DEFAULT_OWNER ?? selected?.owner,
-    defaultRepo: env.GITEA_DEFAULT_REPO ?? selected?.repo,
+    defaultOwner: env[platformEnv.defaultOwnerVar] ?? selected?.owner,
+    defaultRepo: env[platformEnv.defaultRepoVar] ?? selected?.repo,
     remote: selected?.remote,
     candidates,
     gitAvailable,

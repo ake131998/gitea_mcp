@@ -13,6 +13,8 @@ import {
   selectRemote,
   discoverConfig,
   discoverCredentialsForHost,
+  discoverGitLabConfig,
+  discoverGitLabCredentialsForHost,
   resolveGitConfigPath,
 } from "../git-config.js";
 
@@ -726,5 +728,120 @@ describe("discoverCredentialsForHost", () => {
     });
     expect(gitAvailable).toBe(true);
     expect(candidates).toEqual([]);
+  });
+});
+
+describe("discoverGitLabConfig / discoverGitLabCredentialsForHost", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    execCalls = [];
+    mockExec(() => ({ code: 1 }));
+  });
+
+  it("reads the [gitlab] config key (not gitea.token) and carries the bearer scheme", async () => {
+    mockFiles({});
+    mockGit({ configToken: "gl-tok", fill: null });
+    const { candidates } = await discoverGitLabCredentialsForHost({
+      baseUrl: "https://gitlab.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(execCalls[0].args).toEqual([
+      "config",
+      "get",
+      "--url=https://gitlab.example",
+      "gitlab.token",
+    ]);
+    expect(candidates).toEqual([
+      { source: "gitlab-config", secret: "gl-tok", schemes: ["bearer"], status: "pending", nextSchemeIndex: 0 },
+    ]);
+  });
+
+  it("collects GITLAB_TOKEN env — never GITEA_TOKEN — with bearer schemes", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    const { candidates } = await discoverGitLabCredentialsForHost({
+      baseUrl: "https://gitlab.example",
+      cwd: "/repo",
+      env: { GITLAB_TOKEN: "env-tok", GITEA_TOKEN: "gitea-tok" },
+    });
+    expect(candidates).toEqual([
+      { source: "env", secret: "env-tok", schemes: ["bearer"], status: "pending", nextSchemeIndex: 0 },
+    ]);
+  });
+
+  it("credential-store candidates carry only the bearer scheme on GitLab", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: { username: "alice", password: "pw" } });
+    const { candidates } = await discoverGitLabCredentialsForHost({
+      baseUrl: "https://gitlab.example",
+      cwd: "/repo",
+      env: {},
+    });
+    expect(candidates).toEqual([
+      {
+        source: "credential-store",
+        username: "alice",
+        secret: "pw",
+        schemes: ["bearer"],
+        status: "pending",
+        nextSchemeIndex: 0,
+      },
+    ]);
+  });
+
+  it("discoverGitLabConfig honors GITLAB_BASE_URL and GITLAB_DEFAULT_* overrides", async () => {
+    mockFiles({
+      "/repo/.git/config": [
+        '[remote "origin"]',
+        "  url = https://gitlab.example/alice/proj.git",
+        "",
+      ].join("\n"),
+    });
+    mockGit({ configToken: null, fill: null });
+    const result = await discoverGitLabConfig({
+      cwd: "/repo",
+      env: {
+        GITLAB_BASE_URL: "https://gitlab.corp",
+        GITLAB_DEFAULT_OWNER: "corp-owner",
+        GITLAB_DEFAULT_REPO: "corp-repo",
+        GITLAB_TOKEN: "t",
+      },
+    });
+    expect(result).toMatchObject({
+      baseUrl: "https://gitlab.corp",
+      defaultOwner: "corp-owner",
+      defaultRepo: "corp-repo",
+    });
+    expect(execCalls[0].args).toEqual([
+      "config",
+      "get",
+      "--url=https://gitlab.corp",
+      "gitlab.token",
+    ]);
+  });
+
+  it("discoverGitLabConfig falls back to the selected git remote like the Gitea flow", async () => {
+    mockFiles({
+      "/repo/.git/config": [
+        '[remote "origin"]',
+        "  url = https://gitlab.example/alice/proj.git",
+        "",
+      ].join("\n"),
+    });
+    mockGit({ configToken: null, fill: null });
+    const result = await discoverGitLabConfig({ cwd: "/repo", env: {} });
+    expect(result).toMatchObject({
+      baseUrl: "https://gitlab.example",
+      defaultOwner: "alice",
+      defaultRepo: "proj",
+      remote: "origin",
+    });
+  });
+
+  it("returns null with no remote and no GITLAB_BASE_URL (unconfigured start)", async () => {
+    mockFiles({});
+    const result = await discoverGitLabConfig({ cwd: "/repo", env: {} });
+    expect(result).toBeNull();
   });
 });

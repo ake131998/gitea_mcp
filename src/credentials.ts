@@ -20,15 +20,21 @@
  */
 
 /** Where a candidate came from. Determines scheme ordering and priority. */
-export type CredentialSource = "gitea-config" | "env" | "credential-store";
+export type CredentialSource =
+  | "gitea-config"
+  | "gitlab-config"
+  | "env"
+  | "credential-store";
 
 /**
- * HTTP auth scheme. Both are sent via the `Authorization` header.
+ * HTTP auth scheme. All are sent via the `Authorization` header.
  * - `token` → `Authorization: token <PAT>` (Gitea's PAT/OAuth-token scheme)
  * - `basic` → `Authorization: Basic base64(<username>:<secret>)` (works for
  *   both account passwords and PATs when the username matches the owner)
+ * - `bearer` → `Authorization: Bearer <token>` (GitLab's documented
+ *   OAuth-compliant scheme for personal/project/group access tokens)
  */
-export type AuthScheme = "token" | "basic";
+export type AuthScheme = "token" | "basic" | "bearer";
 
 /**
  * A single candidate credential with its runtime state. The state fields
@@ -122,6 +128,9 @@ export function buildAuthHeader(candidate: CandidateCredential, scheme: AuthSche
     const user = candidate.username ?? "oauth2";
     const encoded = Buffer.from(`${user}:${candidate.secret}`).toString("base64");
     return `Basic ${encoded}`;
+  }
+  if (scheme === "bearer") {
+    return `Bearer ${candidate.secret}`;
   }
   return `token ${candidate.secret}`;
 }

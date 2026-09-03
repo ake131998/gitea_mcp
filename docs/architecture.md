@@ -31,12 +31,19 @@ requests against the [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.2
                                   └─► credentials.ts (candidate state machine: pure functions)
 ```
 
+GitLab mode (issue #84) keeps the same shape, wired to the second client leaf:
+`cli.ts` → `discoverGitLabConfig` → `GitLabClient` → the GitLab REST API v4
+(`/api/v4`, `Authorization: Bearer`). The platform is selected once per process:
+explicit `MCP_PLATFORM`, else auto-detected from `GITLAB_*` presence (without a
+`GITEA_*` connection variable), else `gitea`. See §5.6.
+
 Per-call flow:
 
 1. The MCP client sends a tool invocation (tool name + JSON arguments).
 2. `server.ts` validates the arguments against the matching Zod schema from
    `tools.ts`, then resolves the target repository.
-3. The handler delegates to a `GiteaClient` method, which builds the URL and
+3. The handler delegates to the active client's method (`GiteaClient` or
+   `GitLabClient` — one platform per process), which builds the URL and
    calls the private `request<T>` helper.
 4. `request<T>` selects an auth header from the active candidate (or advances
    through the candidate × scheme list on `401`/`403`), performs the `fetch`,
@@ -74,6 +81,7 @@ src/
 ├── server.ts         # McpServer, tool/prompt/resource registration, resolve()
 ├── tools.ts          # One Zod schema per tool input
 ├── gitea-client.ts   # GiteaClient REST wrapper (request<T> candidate iteration + HTTP methods)
+├── gitlab-client.ts  # GitLabClient REST wrapper (/api/v4; mirrors the GiteaClient method surface)
 ├── skills.ts         # skill install logic + tool registry (gitea-mcp init --tool <name>)
 ├── assets/           # Guidance content (shipped inside dist/ via copy-assets)
 │   ├── instructions.md          # handshake instructions (Track A)
@@ -89,12 +97,13 @@ scripts/
 | File | Responsibility (invariant) |
 |------|----------------------------|
 | `src/index.ts` | The package `main` entry. Re-exports `createServer` and `runServer` from `server.ts` so `import "@amonstack/gitea-mcp"` works for programmatic use. Defines nothing of its own. |
-| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` to resolve the Gitea instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
+| `src/cli.ts` | Process entry point for the `gitea-mcp` bin. Calls `git-config.ts`'s `discoverConfig()` (or `discoverGitLabConfig()` in GitLab mode — selected by `MCP_PLATFORM` / the `GITLAB_*`-vs-`GITEA_*` env mix, see `resolvePlatform`) to resolve the instance, credential candidates, and default owner/repo from git + env, then passes the candidates to `runServer`. With no git remote and no `GITEA_BASE_URL` / `GITLAB_BASE_URL`, it prints a one-line notice and starts the server in an **unconfigured** state (business tools return `NotConfiguredError`; the `configure_gitea` / `configure_gitlab` tool enables runtime configuration). Dispatches the `gitea-mcp init ...` subcommand (no credentials required) to `skills.ts`. Contains no tool or HTTP logic. |
 | `src/credentials.ts` | Pure credential candidate state machine — types (`CandidateCredential`, `CredentialDiscoveryResult`, `AuthScheme`) and transition functions (`pickNextAttempt`, `markAttemptFailed`, `markAttemptSucceeded`, `buildAuthHeader`, `orderSchemesForCredentialStore`, `summarizeCandidates`). No I/O, no MCP, no HTTP — a pure leaf both `git-config.ts` (candidate construction) and `gitea-client.ts` (request-time iteration) depend on. |
-| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`) via file reads, resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list through git's own machinery: `[gitea "<baseUrl>"] token` via `git config get --url=<baseUrl> gitea.token` → `GITEA_TOKEN` env → the credential git would use via `git credential fill` (config chain + credential helpers — the OS-keychain support the in-process parser never had). The secret therefore enters the process via subprocess stdout, not a `node:fs` read — this removed the CodeQL `js/file-access-to-http` file-read source (issue #79). Each credential candidate gets its scheme order from `credentials.ts`'s `orderSchemesForCredentialStore`. Exports `discoverConfig({cwd,env})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?, gitAvailable?}`) or `null` when no instance can be found; `gitAvailable:false` means the git binary could not be used (env-token / anonymous fallback). Also exports `discoverCredentialsForHost({baseUrl, cwd?, env?, username?, repoPath?})` for runtime re-discovery against an explicit host (used by the `configure_gitea` tool), with strict `username` narrowing. No MCP/HTTP logic; file reads swallow only `ENOENT` (rethrow other errors), git subprocess non-zero exits map to "no value" (the ENOENT analogue) and spawn failures / timeouts to `gitAvailable:false`. |
-| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md`. The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` tool delegates to `GiteaClient.getCredentialStatus()`; the `configure_gitea` tool composes runtime configuration (calls `discoverCredentialsForHost` for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests, and a 6th `gitAvailable?: boolean` seeds the session's git-availability flag for `gitea_status`). |
+| `src/git-config.ts` | Auto-discovery leaf module. Parses `.git/config` remotes (`parseGitRemoteUrl`, `readGitRemotes`, `selectRemote`) via file reads, resolves the instance URL (SSH remote → `https://<host>`), and builds the ordered candidate list through git's own machinery: `[gitea "<baseUrl>"] token` / `[gitlab "<baseUrl>"] token` via `git config get --url=<baseUrl> <section>.token` → `GITEA_TOKEN` / `GITLAB_TOKEN` env → the credential git would use via `git credential fill` (config chain + credential helpers — the OS-keychain support the in-process parser never had). The secret therefore enters the process via subprocess stdout, not a `node:fs` read — this removed the CodeQL `js/file-access-to-http` file-read source (issue #79). Platform knobs (config section, env var, source tag, scheme set) are parametrized so the Gitea pipeline (`discoverConfig` / `discoverCredentialsForHost`, `token`/`basic` schemes) and the GitLab pipeline (`discoverGitLabConfig` / `discoverGitLabCredentialsForHost`, `bearer` only) share the machinery but never each other's credential sources. Each credential candidate gets its scheme order from `credentials.ts`. Exports `discoverConfig({cwd,env})` returning `CredentialDiscoveryResult` (`{baseUrl, candidates, defaultOwner?, defaultRepo?, remote?, gitAvailable?}`) or `null` when no instance can be found; `gitAvailable:false` means the git binary could not be used (env-token / anonymous fallback). Also exports the host-scoped re-discovery functions used by the `configure_gitea` / `configure_gitlab` tools, with strict `username` narrowing. No MCP/HTTP logic; file reads swallow only `ENOENT` (rethrow other errors), git subprocess non-zero exits map to "no value" (the ENOENT analogue) and spawn failures / timeouts to `gitAvailable:false`. |
+| `src/server.ts` | Creates the `McpServer`, registers every tool (name + Zod schema + handler), prompt, and resource, owns the `resolve()` owner/repo fallback (backed by session-scoped mutable state), and loads the handshake `instructions` from `assets/instructions.md` (or `assets/instructions-gitlab.md` in GitLab mode). The `resolve_repo` tool delegates remote parsing to `git-config.ts` (`parseRemotes` + `selectRemote`); the `gitea_status` / `gitlab_status` tool delegates to the active client's `getCredentialStatus()`; the `configure_gitea` / `configure_gitlab` tool composes runtime configuration (calls the platform's host-scoped discovery for re-discovery, then `client.configure()`). The attachment-upload handlers read caller-supplied files through a confinement choke point (`readUploadFile`): realpath resolution inside an upload root (`process.cwd()` or `GITEA_UPLOAD_ROOT`), sensitive-location deny-list, extension allow-list, size cap, and generic path-free errors — the only non-fixed-path file reads in this file besides the fixed-path `assets/*.md` loads. Exports `createServer` and `runServer` (all parameters optional; a 5th `deps?: { discoverCredentials? }` injection point supports hermetic unit tests, a 6th `gitAvailable?: boolean` seeds the session's git-availability flag, and a 7th `platform` selects the backing client). The three Gitea guide resources are registered on the Gitea platform only. |
 | `src/tools.ts` | Exports one Zod schema per tool input. The set of schemas stays 1:1 with the tools registered in `server.ts` and the tool tables in `README.md`. |
-| `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, and all HTTP methods. Contains no MCP/stdio logic. |
+| `src/gitea-client.ts` | `GiteaClient` — the REST client wrapping Gitea `/api/v1`. `baseUrl` is optional (client starts unconfigured when omitted); `configure({baseUrl?, candidates?})` replaces the connection state atomically with a full state-machine reset. `request<T>` throws `NotConfiguredError` before any fetch when unconfigured, then iterates the candidate × scheme list (delegating state transitions to `credentials.ts`). Also owns the `GiteaApiError` class (typed `status`/`body` for status-based branching without substring matching), `getCredentialStatus()` for the diagnostic tool, the shared API params/response type definitions, and all HTTP methods. Contains no MCP/stdio logic. |
+| `src/gitlab-client.ts` | `GitLabClient` — the REST client wrapping GitLab `/api/v4` (issue #84), parallel to `GiteaClient`. Presents the **identical public method surface** (names, parameters, declared return types) so `server.ts` holds either client behind one union type; response bodies pass through in GitLab's native JSON shape. Projects are addressed by URL-encoded path (`owner%2Frepo`), issues/merge requests by project-scoped `iid`, milestones/pipelines by ID, releases by `tag_name`, wiki pages by slug. Operations without a GitLab counterpart fail with `GitLabUnsupportedError`; Premium/Ultimate-gated issue-link operations fail through `requestTierGated`, which converts a runtime 403 (while a credential is already active) into `GitLabTierError` instead of letting the retry loop burn a working candidate. Owns `GitLabApiError` / `GitLabNotConfiguredError` and `getCredentialStatus()`. The secret rides only in the `Authorization: Bearer` header — never a query string. Contains no MCP/stdio logic. |
 | `src/skills.ts` | The `gitea-mcp init --tool <name>` implementation: carries the registry of supported target tools and, for the chosen tool, copies every bundled skill (each subdirectory of `dist/assets/skills/` containing a `SKILL.md`) into that tool's skills directory, one folder per skill. No MCP/HTTP logic; no Gitea credentials required. |
 | `src/assets/**` | Markdown guidance content (instructions, resources, the action skills). Pure data, read at runtime; copied into `dist/assets/` by `scripts/copy-assets.mjs` so it ships with the published package. |
 
@@ -129,6 +138,7 @@ server.ts
   ├─► tools.ts          (Zod schemas)
   ├─► git-config.ts     (parseRemotes, selectRemote — used by the resolve_repo tool)
   ├─► gitea-client.ts   (GiteaClient)
+  ├─► gitlab-client.ts  (GitLabClient — selected by the platform param)
   ├─► credentials.ts    (CandidateCredential type — the candidates param of createServer/runServer)
   ├─► @modelcontextprotocol/sdk  (McpServer, StdioServerTransport)
   └─► node:fs/promises, node:path (fixed-path `assets/*.md` loads; confined
@@ -136,6 +146,11 @@ server.ts
        upload-root, deny-list, allow-list, and size-cap rules)
 gitea-client.ts
   ├─► credentials.ts    (pickNextAttempt, markAttemptFailed/Succeeded, buildAuthHeader, summarizeCandidates)
+  └─► (global fetch)
+gitlab-client.ts
+  ├─► credentials.ts    (same state-machine functions; candidates carry the bearer scheme)
+  ├─► gitea-client.ts   (TYPE-ONLY: the shared params/response type contract, so
+  │                      both clients present one identical method surface to server.ts)
   └─► (global fetch)
 skills.ts
   └─► assets/skills/<action>/SKILL.md  (read bundled skills tree, copy to target tool dir)
@@ -150,16 +165,20 @@ Rules implied by the graph:
 - `gitea-client.ts` imports `credentials.ts` (the state-machine functions) but
   no other project file — it stays pure HTTP + candidate iteration.
 - `server.ts` is the composition root: the only file that imports both
-  `tools.ts` and `gitea-client.ts`, wiring schemas to handlers to client
-  methods. It also reads guidance markdown from `assets/` and reuses
-  `git-config.ts`'s remote parsers for `resolve_repo`.
+  `tools.ts` and the client modules (`gitea-client.ts`, `gitlab-client.ts`),
+  wiring schemas to handlers to client methods. It also reads guidance
+  markdown from `assets/` and reuses `git-config.ts`'s remote parsers for
+  `resolve_repo`.
 - `cli.ts` depends on `server.ts`'s `runServer`, `git-config.ts`'s
-  `discoverConfig`, and (lazily, only for the `init` subcommand) on
-  `skills.ts`. No file imports `cli.ts`.
+  `discoverConfig` / `discoverGitLabConfig`, and (lazily, only for the `init`
+  subcommand) on `skills.ts`. No file imports `cli.ts`.
 - `skills.ts` is a leaf that only reads the bundled skills tree; it touches no
   MCP/HTTP logic and needs no Gitea credentials.
 - There are no cycles and no hidden lateral imports (e.g. `gitea-client.ts`
-  never imports `tools.ts`).
+  never imports `tools.ts`). The one sanctioned lateral edge is
+  `gitlab-client.ts`'s **type-only** import of `gitea-client.ts`'s shared
+  params/response types — both clients serve the same tool contract, and the
+  types are that contract; runtime code flows strictly downward.
 
 ## 5. Core Patterns
 
@@ -334,6 +353,53 @@ mirroring the merge-pull safety pattern. The Wiki tool group
 spec (page model, naming, Markdown style, templates) — and is referenced from the
 handshake instructions and the tool cookbook.
 
+### 5.6 Platform selection and the GitLab client (issue #84)
+
+One server process serves one platform. `createServer` / `runServer` take a
+trailing `platform` parameter (`"gitea" | "gitlab"`, default `"gitea"`), and
+`cli.ts` resolves it via `resolvePlatform(process.env)`:
+
+1. `MCP_PLATFORM=gitlab` (or `gitea`) wins; an invalid value exits `1`;
+2. otherwise GitLab is auto-selected when `GITLAB_BASE_URL` or `GITLAB_TOKEN`
+   is set and no `GITEA_*` connection variable is;
+3. the default remains `gitea`, so existing configurations are unchanged.
+
+Consequences of the one-platform-per-process rule:
+
+- The 68 shared business tools keep their names; `server.ts` types the client
+  as `GiteaClient | GitLabClient` and calls the identical method surface.
+- The diagnostic pair is per-platform: `configure_gitea` + `gitea_status`
+ (Gitea) vs `configure_gitlab` + `gitlab_status` (GitLab); the Gitea pair's
+ names, descriptions, and messages are byte-identical to the pre-#84 text.
+- `resolve()`'s error guidance names the platform's env vars and configure
+  tool (Gitea wording is unchanged).
+- The three guide resources document Gitea object shapes and are registered
+  on the Gitea platform only; GitLab mode loads
+  `assets/instructions-gitlab.md` as the handshake instructions.
+
+`GitLabClient` (in `gitlab-client.ts`) mirrors the `GiteaClient` request core:
+the same candidate × scheme retry loop over `401`/`403`, atomic
+`configure()` with a full state-machine reset, and redacted
+`getCredentialStatus()`. Platform differences:
+
+- **API root & auth**: `/api/v4`; candidates carry the `bearer` scheme —
+  the secret rides only in `Authorization: Bearer <token>` (never
+  `?private_token=`, never a `node:fs` read).
+- **Addressing**: projects by URL-encoded path (`owner%2Frepo`); issues/MRs
+  by project-scoped `iid`; milestones/pipelines by ID; releases by
+  `tag_name`; wiki pages by URL-encoded slug. Issue labels arrive as
+  comma-separated NAMES, so Gitea-style label IDs are resolved through the
+  labels API, and assignee usernames through the project members API.
+- **Typed failures**: `GitLabApiError` (status/body), `GitLabTierError` for
+  Premium/Ultimate-gated issue links, `GitLabUnsupportedError` for missing
+  counterparts (attachments, global-ID note edits, ID-addressed releases,
+  failed-jobs-only rerun, wiki revisions, rebase merge strategies, and
+  parameter-level gaps such as `website`/`private` on `update_repo`).
+- **Tier gating**: `requestTierGated` converts a runtime `403` on
+  issue-links endpoints into `GitLabTierError` only when a credential is
+  already active — auth probing (no active candidate yet) keeps the plain
+  retry semantics, so a bad token is never misread as a tier limit.
+
 ## 6. Environment Contract
 
 | Variable | Required | Consumer | Purpose |
@@ -343,6 +409,11 @@ handshake instructions and the tool cookbook.
 | `GITEA_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default repository owner so `owner` can be omitted per call; defaults to the selected remote's owner. |
 | `GITEA_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default repository name so `repo` can be omitted per call; defaults to the selected remote's repo. |
 | `GITEA_UPLOAD_ROOT` | No | `server.ts` (`readUploadFile`) | Root directory attachment uploads may read from. Defaults to the server's working directory; the realpath-resolved `file_path` must stay inside this root. |
+| `MCP_PLATFORM` | No | `cli.ts` (`resolvePlatform`) | Platform selection: `gitea` (default) or `gitlab`. Wins over the `GITLAB_*`-presence auto-detection; an invalid value exits `1`. |
+| `GITLAB_BASE_URL` | No | `cli.ts` → `GitLabClient` | GitLab instance origin (e.g. `https://gitlab.example.com`). When unset, auto-detected from the selected git remote's host. Its presence (without a `GITEA_*` connection variable) selects GitLab mode. |
+| `GITLAB_TOKEN` | No | `cli.ts` → `GitLabClient` | GitLab API access token. Tried after a `.git/config [gitlab]` token and before git's credential machinery; always sent as `Authorization: Bearer`. When git is unavailable this is the only token source. |
+| `GITLAB_DEFAULT_OWNER` | No | `cli.ts` → `server.resolve` | Default project owner (GitLab mode) so `owner` can be omitted per call; defaults to the selected remote's owner. |
+| `GITLAB_DEFAULT_REPO` | No | `cli.ts` → `server.resolve` | Default project name (GitLab mode) so `repo` can be omitted per call; defaults to the selected remote's repo. |
 | `NPM_TOKEN` | No (publish only) | `make publish` | npm publish token; never read at runtime |
 
 All five `GITEA_*` variables are optional overrides; none is validated as
@@ -357,6 +428,9 @@ for `git config get`); when git cannot be used, discovery degrades to
 server in an **unconfigured** state — business tools throw `NotConfiguredError`,
 while `tools/list`, `resolve_repo`, `gitea_status`, and `configure_gitea` remain
 usable so the connection can be established at runtime without restarting.
+The GitLab mode applies the same contract with the `GITLAB_*` names
+(`discoverGitLabConfig()`, unconfigured guidance naming `GITLAB_BASE_URL` and
+`configure_gitlab`); `MCP_PLATFORM` selects between them (see §5.6).
 
 ## 7. Build & Packaging
 

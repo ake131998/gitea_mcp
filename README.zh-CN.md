@@ -17,10 +17,11 @@
 
 `gitea-mcp` 是一个 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务端，将 Gitea 仓库操作暴露为 MCP 工具。连接到 MCP 客户端（Claude Desktop、opencode、Cursor 等）后，AI 助手即可通过自然语言在 Gitea 实例上创建、查询、更新和删除议题、标签、里程碑、评论和主题。
 
-服务端通过 stdio 通信，封装了 [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.22/)。
+服务端通过 stdio 通信，封装了 [Gitea REST API (`/api/v1`)](https://docs.gitea.com/api/1.22/)。同时支持 **GitLab**（gitlab.com 与自建实例）作为第二平台——见 [GitLab 支持](#gitlab-支持)。
 
 ## 功能特性
 
+- **GitLab 支持** —— 同一套工具运行于 gitlab.com 与自建 GitLab 实例（`MCP_PLATFORM=gitlab` 或 `GITLAB_*` 环境变量契约）
 - **完整的 Gitea 项目管理** —— 通过自然语言管理议题、标签、里程碑、评论与主题
 - **零配置自动发现** —— 从项目 git 配置读取 `baseUrl`、`owner`、`repo` 与令牌；一次全局安装即可服务多个仓库
 - **多来源认证 + 自动容错** —— 依次尝试 `[gitea]` 配置令牌、`GITEA_TOKEN`、git 自身的凭据机制（`git credential fill`，支持存储文件与 OS 钥匙串），遇 `401`/`403` 自动切换
@@ -92,6 +93,51 @@ node dist/cli.js
 | `GITEA_DEFAULT_OWNER` | 否 | 默认仓库所有者，免去每次传入 `owner` 参数 |
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
 | `GITEA_UPLOAD_ROOT` | 否 | 附件上传（`create_issue_attachment` / `create_issue_comment_attachment`）允许读取的根目录。默认为服务器工作目录；解析后的路径必须位于该根目录内。 |
+| `MCP_PLATFORM` | 否 | 当前服务进程服务的平台：`gitea`（默认）或 `gitlab`。设置后优先于 [GitLab 支持](#gitlab-支持)中描述的自动判定。 |
+| `GITLAB_BASE_URL` | 否 | GitLab 实例地址（如 `https://gitlab.example.com`）。未设置时从项目 git 远程地址自动推导；其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
+| `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
+| `GITLAB_DEFAULT_OWNER` | 否 | 默认项目所有者（GitLab 模式），免去每次传入 `owner` 参数 |
+| `GITLAB_DEFAULT_REPO` | 否 | 默认项目名称（GitLab 模式），免去每次传入 `repo` 参数 |
+
+### GitLab 支持
+
+`gitea-mcp` 也可以运行在 **GitLab**（gitlab.com 与自建实例）之上。一个服务进程
+只服务一个平台——需要同时使用两者时，请在 MCP 客户端中注册两个条目。平台在启动时
+按下述规则选定：
+
+1. 设置了 `MCP_PLATFORM=gitlab`（或 `gitea`）时以其为准；
+2. 否则，当设置了 `GITLAB_BASE_URL` 或 `GITLAB_TOKEN` 且未设置任何 `GITEA_*` 连接
+   变量时，自动选定 GitLab；
+3. 默认仍为 `gitea`（既有配置行为不变）。
+
+GitLab 模式下，相同的 68 个业务工具名运行在 GitLab REST API v4（`/api/v4`）之上，
+并以 `configure_gitlab` / `gitlab_status` 取代 `configure_gitea` / `gitea_status`。
+发现机制与 Gitea 契约一致：git 配置中的 `[gitlab "<baseUrl>"] token`、`GITLAB_TOKEN`
+以及 `git credential fill`——所有凭据只以 `Authorization: Bearer <token>` 头发送
+（绝不通过 URL 查询参数传递）。
+
+覆盖说明——无 GitLab 对应物的操作会返回类型化的 `GitLabUnsupportedError`，仅
+Premium/Ultimate 可用的操作会返回 `GitLabTierError`（都不是原始 API 错误）：
+
+- **完全可用**：议题、评论（列出/创建）、标签、里程碑、主题、合并请求、
+  Release（列出/创建/按 tag 查询）、Wiki 页面、流水线（Actions 工具组：
+  列出/查询/取消/重跑）。
+- **付费层限制（GitLab Premium/Ultimate）**：议题依赖/阻塞工具组
+  （`list_issue_dependencies`、`add/remove_issue_dependency`、`list_issue_blocks`、
+  `add/remove_issue_block`、`check_issue_blocked`）——GitLab Free 会拒绝阻塞类
+  链接类型。
+- **GitLab 上不可用**：议题附件工具；`update_comment` / `delete_comment`
+  （GitLab 评论按议题内 note 寻址）；`get_release`、`update_release`、
+  `delete_release`（GitLab Release 以 `tag_name` 寻址——请用
+  `get_release_by_tag`）；`rerun_action_run_failed_jobs`；`list_wiki_revisions`；
+  `merge_pull_request` 的 `rebase` / `rebase-merge` 策略；以及 release 的
+  `draft`/`prerelease` 标志、`update_repo` 的 `website`/`private`、wiki 的
+  `message`、`search_issues` 的 `labels` 过滤参数。
+- **寻址规则**遵循 GitLab 约定：议题与合并请求按项目内 `iid`，里程碑与流水线按
+  数字 ID，Release 按 `tag_name`，Wiki 按 slug；响应返回 GitLab 原生 JSON
+  （`iid`、`web_url`、`references` 等）。
+- 内置动作技能与三个参考资源面向 Gitea 场景，仅在 Gitea 平台注册；GitLab 的
+  使用指引随服务端 instructions 下发。
 
 ### 自动发现的工作方式
 
@@ -234,6 +280,10 @@ gitea-mcp
 ```
 
 ## 可用工具
+
+> 下表描述工具契约。在 GitLab 平台上，相同的 68 个业务工具运行于 GitLab REST
+> API v4（并以 `configure_gitlab` / `gitlab_status` 取代 `configure_gitea` /
+> `gitea_status`）——各工具的覆盖差异见 [GitLab 支持](#gitlab-支持)。
 
 ### 议题 (Issues)
 

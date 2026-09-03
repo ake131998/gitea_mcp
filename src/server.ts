@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { GiteaClient } from "./gitea-client.js";
+import { GitLabClient } from "./gitlab-client.js";
 import {
   ListIssuesSchema,
   GetIssueSchema,
@@ -47,6 +48,8 @@ import {
   RemoveTopicSchema,
   GiteaStatusSchema,
   ConfigureGiteaSchema,
+  GitlabStatusSchema,
+  ConfigureGitlabSchema,
   ListPullRequestsSchema,
   GetPullRequestSchema,
   CreatePullRequestSchema,
@@ -76,7 +79,7 @@ import {
   ListProjectsSchema,
   GetProjectSchema,
 } from "./tools.js";
-import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost } from "./git-config.js";
+import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost, discoverGitLabCredentialsForHost } from "./git-config.js";
 import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
@@ -249,6 +252,16 @@ export interface ServerDeps {
   ) => Promise<DiscoverCredentialsForHostResult>;
 }
 
+/**
+ * The hosting platform this server process serves. One process serves one
+ * platform: `server.ts` wires the same 68 shared business tools onto either
+ * `GiteaClient` or `GitLabClient`, plus that platform's configure/status
+ * diagnostic pair (`configure_gitea`+`gitea_status` vs
+ * `configure_gitlab`+`gitlab_status`). Running both platforms means running
+ * two server instances (two MCP client entries).
+ */
+export type Platform = "gitea" | "gitlab";
+
 export async function createServer(
   baseUrl?: string,
   candidates?: CandidateCredential[],
@@ -256,26 +269,35 @@ export async function createServer(
   defaultRepo?: string,
   deps?: ServerDeps,
   gitAvailable?: boolean,
+  platform: Platform = "gitea",
 ) {
-  const client = baseUrl
-    ? Array.isArray(candidates)
-      ? new GiteaClient({ baseUrl, candidates })
-      : new GiteaClient({ baseUrl, token: candidates })
-    : new GiteaClient({});
+  const client: GiteaClient | GitLabClient =
+    platform === "gitlab"
+      ? baseUrl
+        ? Array.isArray(candidates)
+          ? new GitLabClient({ baseUrl, candidates })
+          : new GitLabClient({ baseUrl, token: candidates })
+        : new GitLabClient({})
+      : baseUrl
+        ? Array.isArray(candidates)
+          ? new GiteaClient({ baseUrl, candidates })
+          : new GiteaClient({ baseUrl, token: candidates })
+        : new GiteaClient({});
 
   // Session-scoped target state — lives in process memory only, never persisted.
   const session = {
     defaultOwner,
     defaultRepo,
     username: undefined as string | undefined,
-    /** Whether git could be used for credential discovery (fix guidance for gitea_status). */
+    /** Whether git could be used for credential discovery (fix guidance for the status tool). */
     gitAvailable,
   };
 
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   let instructions: string | undefined;
   try {
-    instructions = await readFile(join(moduleDir, "assets", "instructions.md"), "utf-8");
+    const instructionsFile = platform === "gitlab" ? "instructions-gitlab.md" : "instructions.md";
+    instructions = await readFile(join(moduleDir, "assets", instructionsFile), "utf-8");
   } catch {
     // Guidance assets may be absent during a partial build or `make dev` that did
     // not run copy-assets; the server still works, just without the instructions hint.
@@ -296,12 +318,20 @@ export async function createServer(
     },
   );
 
+  // Per-platform wording for user-facing guidance (env var names and the
+  // configure tool). The Gitea strings are byte-identical to the historical
+  // resolve() message.
+  const wording =
+    platform === "gitlab"
+      ? { envVars: "GITLAB_DEFAULT_OWNER/GITLAB_DEFAULT_REPO", configureTool: "configure_gitlab" }
+      : { envVars: "GITEA_DEFAULT_OWNER/GITEA_DEFAULT_REPO", configureTool: "configure_gitea" };
+
   function resolve(input: { owner?: string; repo?: string }) {
     const owner = input.owner || session.defaultOwner;
     const repo = input.repo || session.defaultRepo;
     if (!owner || !repo) {
       throw new Error(
-        "owner and repo are required. Provide them directly, set GITEA_DEFAULT_OWNER/GITEA_DEFAULT_REPO env vars, use resolve_repo to detect from git, or call configure_gitea to set them at runtime.",
+        `owner and repo are required. Provide them directly, set ${wording.envVars} env vars, use resolve_repo to detect from git, or call ${wording.configureTool} to set them at runtime.`,
       );
     }
     return { owner, repo };
@@ -1518,114 +1548,148 @@ export async function createServer(
     },
   );
 
-  server.registerTool(
-    "configure_gitea",
-    {
-      description:
-        "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitea] token, GITEA_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
-      inputSchema: ConfigureGiteaSchema.shape,
-    },
-    async (input) => {
-      if (!input.base_url && !input.owner && !input.repo && !input.username) {
-        throw new Error("At least one of base_url, owner, repo, or username must be provided.");
+  // ── Configure + status (one diagnostic pair per platform) ──
+
+  /**
+   * Shared body of the configure tool (identical flow for both platforms):
+   * re-discovery → atomic `client.configure()` → session scalar updates →
+   * redacted summary. `defaultDiscover` selects the platform's three-source
+   * discovery; the `deps.discoverCredentials` injection point (used by
+   * hermetic tests) overrides it.
+   */
+  const configureConnection = async (
+    input: { base_url?: string; owner?: string; repo?: string; username?: string },
+    defaultDiscover: (
+      options: DiscoverCredentialsForHostOptions,
+    ) => Promise<DiscoverCredentialsForHostResult>,
+    toolName: string,
+  ) => {
+    if (!input.base_url && !input.owner && !input.repo && !input.username) {
+      throw new Error("At least one of base_url, owner, repo, or username must be provided.");
+    }
+
+    const discover = deps?.discoverCredentials ?? defaultDiscover;
+
+    // 1) Compute the target baseUrl (input.base_url ?? current).
+    const currentBaseUrl = client.getBaseUrl();
+    const targetBaseUrl = input.base_url ?? currentBaseUrl;
+
+    // Re-discovery is triggered by providing base_url or username.
+    const needsRediscovery = input.base_url !== undefined || input.username !== undefined;
+
+    let newCandidates: CandidateCredential[] | undefined;
+
+    if (needsRediscovery) {
+      // If re-discovery is needed but no baseUrl exists → error.
+      if (!targetBaseUrl) {
+        throw new Error(
+          `Cannot trigger credential re-discovery without a base_url. Provide base_url first (e.g. call ${toolName} with base_url set).`,
+        );
       }
-
-      const discover = deps?.discoverCredentials ?? discoverCredentialsForHost;
-
-      // 1) Compute the target baseUrl (input.base_url ?? current).
-      const currentBaseUrl = client.getBaseUrl();
-      const targetBaseUrl = input.base_url ?? currentBaseUrl;
-
-      // Re-discovery is triggered by providing base_url or username.
-      const needsRediscovery = input.base_url !== undefined || input.username !== undefined;
-
-      let newCandidates: CandidateCredential[] | undefined;
-
-      if (needsRediscovery) {
-        // If re-discovery is needed but no baseUrl exists → error.
-        if (!targetBaseUrl) {
-          throw new Error(
-            "Cannot trigger credential re-discovery without a base_url. Provide base_url first (e.g. call configure_gitea with base_url set).",
-          );
-        }
-        // 2) Call discoverCredentials — on throw, abort entirely with zero state change.
-        const repoPath =
-          session.defaultOwner && session.defaultRepo
-            ? `${session.defaultOwner}/${session.defaultRepo}`
-            : undefined;
-        const discovered = await discover({
-          baseUrl: targetBaseUrl,
-          username: input.username ?? session.username,
-          repoPath,
-        });
-        newCandidates = discovered.candidates;
-        session.gitAvailable = discovered.gitAvailable;
-      }
-
-      // 3) client.configure({ baseUrl, candidates }) — atomic replacement.
-      client.configure({
-        baseUrl: targetBaseUrl ?? undefined,
-        candidates: newCandidates,
+      // 2) Call discoverCredentials — on throw, abort entirely with zero state change.
+      const repoPath =
+        session.defaultOwner && session.defaultRepo
+          ? `${session.defaultOwner}/${session.defaultRepo}`
+          : undefined;
+      const discovered = await discover({
+        baseUrl: targetBaseUrl,
+        username: input.username ?? session.username,
+        repoPath,
       });
+      newCandidates = discovered.candidates;
+      session.gitAvailable = discovered.gitAvailable;
+    }
 
-      // 4) Update session scalar fields.
-      if (input.owner !== undefined) session.defaultOwner = input.owner;
-      if (input.repo !== undefined) session.defaultRepo = input.repo;
-      if (input.username !== undefined) session.username = input.username;
+    // 3) client.configure({ baseUrl, candidates }) — atomic replacement.
+    client.configure({
+      baseUrl: targetBaseUrl ?? undefined,
+      candidates: newCandidates,
+    });
 
-      // 5) Return a redacted summary — secrets never appear in tool output.
-      const status = client.getCredentialStatus();
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                configured: status.configured,
-                baseUrl: status.baseUrl,
-                owner: session.defaultOwner,
-                repo: session.defaultRepo,
-                username: session.username,
-                candidates: status.candidates,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
-  );
+    // 4) Update session scalar fields.
+    if (input.owner !== undefined) session.defaultOwner = input.owner;
+    if (input.repo !== undefined) session.defaultRepo = input.repo;
+    if (input.username !== undefined) session.username = input.username;
 
-  server.registerTool(
-    "gitea_status",
-    {
-      description:
-        "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITEA_TOKEN env or anonymous mode remain: install git or set GITEA_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
-      inputSchema: GiteaStatusSchema.shape,
-    },
-    async () => {
-      const status = client.getCredentialStatus();
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ...status,
-                ...(session.gitAvailable !== undefined ? { gitAvailable: session.gitAvailable } : {}),
-                owner: session.defaultOwner,
-                repo: session.defaultRepo,
-                username: session.username,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
-  );
+    // 5) Return a redacted summary — secrets never appear in tool output.
+    const status = client.getCredentialStatus();
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              configured: status.configured,
+              baseUrl: status.baseUrl,
+              owner: session.defaultOwner,
+              repo: session.defaultRepo,
+              username: session.username,
+              candidates: status.candidates,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  };
+
+  const statusPayload = () => {
+    const status = client.getCredentialStatus();
+    return {
+      ...status,
+      ...(session.gitAvailable !== undefined ? { gitAvailable: session.gitAvailable } : {}),
+      owner: session.defaultOwner,
+      repo: session.defaultRepo,
+      username: session.username,
+    };
+  };
+
+  if (platform === "gitlab") {
+    server.registerTool(
+      "configure_gitlab",
+      {
+        description:
+          "Configure the GitLab connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitlab] token, GITLAB_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+        inputSchema: ConfigureGitlabSchema.shape,
+      },
+      (input) => configureConnection(input, discoverGitLabCredentialsForHost, "configure_gitlab"),
+    );
+
+    server.registerTool(
+      "gitlab_status",
+      {
+        description:
+          "Report the resolved GitLab connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITLAB_TOKEN env or anonymous mode remain: install git or set GITLAB_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or GitLabNotConfiguredError to diagnose the connection state. Takes no input.",
+        inputSchema: GitlabStatusSchema.shape,
+      },
+      async () => ({
+        content: [{ type: "text" as const, text: JSON.stringify(statusPayload(), null, 2) }],
+      }),
+    );
+  } else {
+    server.registerTool(
+      "configure_gitea",
+      {
+        description:
+          "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitea] token, GITEA_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+        inputSchema: ConfigureGiteaSchema.shape,
+      },
+      (input) => configureConnection(input, discoverCredentialsForHost, "configure_gitea"),
+    );
+
+    server.registerTool(
+      "gitea_status",
+      {
+        description:
+          "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITEA_TOKEN env or anonymous mode remain: install git or set GITEA_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
+        inputSchema: GiteaStatusSchema.shape,
+      },
+      async () => ({
+        content: [{ type: "text" as const, text: JSON.stringify(statusPayload(), null, 2) }],
+      }),
+    );
+  }
 
   // ── Resources (on-demand reference docs for clients that surface them) ──
 
@@ -1653,21 +1717,27 @@ export async function createServer(
     );
   };
 
-  registerDocResource(
-    "field-reference",
-    "field-reference.md",
-    "Gitea object field reference (Issue, Label, Milestone, Comment, Repo, User)",
-  );
-  registerDocResource(
-    "label-guide",
-    "label-guide.md",
-    "Label management guide: name-vs-id matrix, conventions, safe/unsafe operations",
-  );
-  registerDocResource(
-    "tool-cookbook",
-    "tool-cookbook.md",
-    "Task-to-tool recipes: discover, read, create, edit, destructive ops, pagination, errors",
-  );
+  // The three guide resources document Gitea-API-specific object shapes;
+  // serving them on a GitLab-mode server would be misleading, so they are
+  // registered on the Gitea platform only (GitLab guidance ships via
+  // assets/instructions-gitlab.md instead).
+  if (platform !== "gitlab") {
+    registerDocResource(
+      "field-reference",
+      "field-reference.md",
+      "Gitea object field reference (Issue, Label, Milestone, Comment, Repo, User)",
+    );
+    registerDocResource(
+      "label-guide",
+      "label-guide.md",
+      "Label management guide: name-vs-id matrix, conventions, safe/unsafe operations",
+    );
+    registerDocResource(
+      "tool-cookbook",
+      "tool-cookbook.md",
+      "Task-to-tool recipes: discover, read, create, edit, destructive ops, pagination, errors",
+    );
+  }
 
   // ── Prompts (multi-tool workflow triggers; the model runs the tools) ──
 
@@ -1926,8 +1996,9 @@ export async function runServer(
   defaultRepo?: string,
   deps?: ServerDeps,
   gitAvailable?: boolean,
+  platform: Platform = "gitea",
 ) {
-  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps, gitAvailable);
+  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps, gitAvailable, platform);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

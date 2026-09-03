@@ -333,3 +333,25 @@ describe("credentials — iteration sequence (end-to-end)", () => {
     expect(candidates[2].status).toBe("pending");
   });
 });
+
+describe("bearer scheme (GitLab)", () => {
+  it("buildAuthHeader emits Authorization: Bearer without leaking the secret elsewhere", () => {
+    const candidate = makeCandidate({ secret: "gl-pat", schemes: ["bearer"] });
+    expect(buildAuthHeader(candidate, "bearer")).toBe("Bearer gl-pat");
+  });
+
+  it("a gitlab-config candidate is summarized with source and schemes but no secret", () => {
+    const candidates = [
+      makeCandidate({
+        source: "gitlab-config",
+        secret: "super-secret-gl",
+        schemes: ["bearer"],
+      }),
+    ];
+    const [summary] = summarizeCandidates(candidates);
+    expect(summary.source).toBe("gitlab-config");
+    expect(summary.schemes).toEqual(["bearer"]);
+    expect(summary.secretPresent).toBe(true);
+    expect(JSON.stringify(summary)).not.toContain("super-secret-gl");
+  });
+});
