@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "../git-config.js";
+import type { CandidateCredential } from "../credentials.js";
 
 vi.mock("../gitea-client.js", () => ({
   GiteaClient: vi.fn(),
@@ -382,5 +383,111 @@ describe("GitLab-mode handler smoke (every shared tool routes and serializes)", 
       (m) => (mockGitLabClient[m] as ReturnType<typeof vi.fn>).mock.calls.length > 0,
     );
     expect(touched.length).toBeGreaterThan(40);
+  });
+
+  it("constructs the GitLabClient with a string token when candidates is not an array", async () => {
+    const { createServer } = await import("../server.js");
+    // The signature types candidates as an array, but createServer also
+    // accepts a bare token string at runtime (historical Gitea shape) —
+    // exercise that branch for the GitLab client too.
+    await createServer(
+      "https://gl",
+      "raw-token" as unknown as CandidateCredential[],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "gitlab",
+    );
+    expect(GitLabClient).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://gl", token: "raw-token" }),
+    );
+  });
+
+  it("constructs an unparameterized GiteaClient in default gitea mode without arguments", async () => {
+    const { createServer } = await import("../server.js");
+    await createServer();
+    expect(GiteaClient).toHaveBeenCalledWith({});
+  });
+
+  it("triage_action_runs prompt renders without a status filter", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, undefined, undefined, undefined, undefined, "gitlab");
+    const prompts = (server as unknown as {
+      _registeredPrompts: Record<
+        string,
+        { callback: (args: Record<string, unknown>) => Promise<{ messages: { content: { text: string } }[] }> }
+      >;
+    })._registeredPrompts;
+    const result = await prompts["triage_action_runs"].callback({ owner: "o", repo: "r" });
+    expect(result.messages[0].content.text).toContain("Call list_action_runs({  page: 1");
+  });
+
+  it("resolve_repo falls back to the working directory when no path is given", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, undefined, undefined, undefined, undefined, "gitlab");
+    // The worktree checkout has a `.git` file → remotes resolve (or the
+    // handler throws its path-free error); either way the `||` fallback branch
+    // (input.path → process.cwd()) is exercised.
+    await registeredTools(server as never)["resolve_repo"].handler({});
+  });
+});
+
+describe("createServer client construction matrix (both platforms × argument shapes)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockGitLabClient = {};
+    wireMock(mockGitLabClient, GitLabClient);
+  });
+
+  const candidate: CandidateCredential = {
+    source: "env",
+    secret: "t",
+    schemes: ["bearer"],
+    status: "pending",
+    nextSchemeIndex: 0,
+  };
+
+  it("gitlab mode without a baseUrl constructs an unconfigured GitLabClient", async () => {
+    const { createServer } = await import("../server.js");
+    await createServer(undefined, undefined, "o", "r", undefined, undefined, "gitlab");
+    expect(GitLabClient).toHaveBeenCalledWith({});
+  });
+
+  it("gitlab mode with a candidates array constructs GitLabClient({ baseUrl, candidates })", async () => {
+    const { createServer } = await import("../server.js");
+    await createServer("https://gl", [candidate], undefined, undefined, undefined, undefined, "gitlab");
+    expect(GitLabClient).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://gl", candidates: [candidate] }),
+    );
+  });
+
+  it("gitea mode with a candidates array constructs GiteaClient({ baseUrl, candidates })", async () => {
+    const { createServer } = await import("../server.js");
+    await createServer("https://g", [candidate]);
+    expect(GiteaClient).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://g", candidates: [candidate] }),
+    );
+  });
+
+  it("gitea mode with a bare token string constructs GiteaClient({ baseUrl, token })", async () => {
+    const { createServer } = await import("../server.js");
+    await createServer("https://g", "raw-token" as unknown as CandidateCredential[]);
+    expect(GiteaClient).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: "https://g", token: "raw-token" }),
+    );
+  });
+
+  it("triage_action_runs prompt renders a status-filtered first step when status is given", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://gl", undefined, undefined, undefined, undefined, undefined, "gitlab");
+    const prompts = (server as unknown as {
+      _registeredPrompts: Record<
+        string,
+        { callback: (args: Record<string, unknown>) => Promise<{ messages: { content: { text: string } }[] }> }
+      >;
+    })._registeredPrompts;
+    const result = await prompts["triage_action_runs"].callback({ owner: "o", repo: "r", status: "running" });
+    expect(result.messages[0].content.text).toContain('status: "running"');
   });
 });

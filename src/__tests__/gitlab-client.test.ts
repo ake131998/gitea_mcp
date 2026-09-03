@@ -1223,4 +1223,179 @@ describe("GitLabClient", () => {
     ).rejects.toThrow(GitLabUnsupportedError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  // ── Branch completion: single-condition combos not exercised above ──
+
+  it("GitLabApiError falls back to statusText when the response body is empty", async () => {
+    stubFetch(buildResponse("", 404, "Not Found"));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.getIssue("o", "r", 1)).rejects.toThrow("GitLab API error (404): Not Found");
+  });
+
+  it("an active candidate without a locked scheme falls back to its first scheme", async () => {
+    const fetchMock = stubFetch(buildResponse({ iid: 1 }));
+    const client = new GitLabClient({
+      baseUrl: "https://gl.example",
+      candidates: [
+        { source: "env", secret: "t", schemes: ["bearer"], status: "active", nextSchemeIndex: 1 },
+      ],
+    });
+    await client.getIssue("o", "r", 1);
+    expect((lastCall(fetchMock).init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer t",
+    );
+  });
+
+  it("list_issues maps state closed", async () => {
+    const fetchMock = stubFetch(buildResponse([]));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.listIssues({ owner: "o", repo: "r", state: "closed" });
+    expect(lastCall(fetchMock).url).toContain("state=closed");
+  });
+
+  it("update_issue maps state open to reopen", async () => {
+    const fetchMock = stubFetch(buildResponse({ iid: 5 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.updateIssue({ owner: "o", repo: "r", index: 5, state: "open" });
+    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({ state_event: "reopen" });
+  });
+
+  it("add_issue_labels with an empty additions set and no existing labels returns an empty list", async () => {
+    // labels: [] → nothing to add; the re-read finds zero labels → early return.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: [] }))
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.addIssueLabels("o", "r", 5, [])).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("remove_issue_dependency defaults a missing depOwner to the same repo owner", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        buildResponse([{ issue_link_id: 51, link_type: "is_blocked_by", iid: 7, project_id: 1 }]),
+      )
+      .mockResolvedValueOnce(buildResponse({ id: 1 }))
+      .mockResolvedValueOnce(buildResponse(undefined, 204))
+      .mockResolvedValueOnce(buildResponse({ iid: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.removeIssueDependency({ owner: "o", repo: "r", index: 5, depIndex: 7, depRepo: "other-repo" });
+    expect(fetchMock.mock.calls[1][0]).toBe("https://gl.example/api/v4/projects/o%2Fother-repo");
+  });
+
+  it("list_milestones omits the state filter when state is not given", async () => {
+    const fetchMock = stubFetch(buildResponse([]));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.listMilestones("o", "r");
+    expect(lastCall(fetchMock).url).toBe("https://gl.example/api/v4/projects/o%2Fr/milestones");
+  });
+
+  it("update_milestone maps state closed to the close state_event", async () => {
+    const fetchMock = stubFetch(buildResponse({ id: 12 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.updateMilestone({ owner: "o", repo: "r", id: 12, state: "closed" });
+    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({ state_event: "close" });
+  });
+
+  it("add_issue_labels treats non-array issue labels as none", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: null })) // read current
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: ["a"] })) // PUT add_labels
+      .mockResolvedValueOnce(buildResponse({ iid: 5, labels: ["a"] })) // re-read issue
+      .mockResolvedValueOnce(buildResponse([{ id: 1, name: "a", color: "#111111" }])); // labels list
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    const result = await client.addIssueLabels("o", "r", 5, ["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ add_labels: "a" });
+    expect(result).toEqual([{ id: 1, name: "a", color: "#111111" }]);
+  });
+
+  it("remove_issue_dependency defaults a half-specified cross-project target to the same repo", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        buildResponse([{ issue_link_id: 41, link_type: "is_blocked_by", iid: 7, project_id: 1 }]),
+      )
+      .mockResolvedValueOnce(buildResponse({ id: 1 })) // dep project lookup (same repo)
+      .mockResolvedValueOnce(buildResponse(undefined, 204))
+      .mockResolvedValueOnce(buildResponse({ iid: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.removeIssueDependency({ owner: "o", repo: "r", index: 5, depIndex: 7, depOwner: "other" });
+    expect(fetchMock.mock.calls[1][0]).toBe("https://gl.example/api/v4/projects/other%2Fr");
+  });
+
+  it("check_issue_blocked paginates through full pages until a short page", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      issue_link_id: i + 1,
+      link_type: "is_blocked_by",
+      iid: i + 1,
+      project_id: 1,
+      state: "opened",
+    }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse(fullPage))
+      .mockResolvedValueOnce(buildResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    const result = await client.checkIssueBlocked({ owner: "o", repo: "r", index: 5 });
+    expect(result.total_dependencies).toBe(100);
+    expect(result.open_blockers).toBe(100);
+    expect(fetchMock.mock.calls[1][0]).toContain("page=2");
+  });
+
+  it("list_milestones maps state closed", async () => {
+    const fetchMock = stubFetch(buildResponse([]));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.listMilestones("o", "r", "closed");
+    expect(lastCall(fetchMock).url).toContain("state=closed");
+  });
+
+  it("create_milestone omits an absent due date", async () => {
+    const fetchMock = stubFetch(buildResponse({ id: 1 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.createMilestone({ owner: "o", repo: "r", title: "v1" });
+    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({ title: "v1" });
+  });
+
+  it("update_milestone maps a due date without touching the state", async () => {
+    const fetchMock = stubFetch(buildResponse({ id: 12 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.updateMilestone({ owner: "o", repo: "r", id: 12, title: "v1", due_on: "2026-01-02T00:00:00Z" });
+    expect(JSON.parse(lastCall(fetchMock).init.body as string)).toEqual({
+      title: "v1",
+      due_date: "2026-01-02",
+    });
+  });
+
+  it("list_topics tolerates a project response without a topics attribute", async () => {
+    stubFetch(buildResponse({ id: 1 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.listTopics({ owner: "o", repo: "r" })).resolves.toEqual({ topics: [] });
+  });
+
+  it("replace_topics tolerates a response without a topics attribute", async () => {
+    stubFetch(buildResponse({ id: 1 }));
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await expect(client.replaceTopics({ owner: "o", repo: "r", topics: [] })).resolves.toEqual({
+      topics: [],
+    });
+  });
+
+  it("add_topic tolerates a project response without a topics attribute", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(buildResponse({ id: 1 }))
+      .mockResolvedValueOnce(buildResponse({ id: 1, topics: ["t"] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new GitLabClient({ baseUrl: "https://gl.example", token: "t" });
+    await client.addTopic("o", "r", "t");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ topics: ["t"] });
+  });
 });
