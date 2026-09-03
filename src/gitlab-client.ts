@@ -241,7 +241,12 @@ export class GitLabClient {
   // ── Request core ──
 
   private static normalizeBaseUrl(raw: string): string {
-    return raw.replace(/\/+$/, "");
+    // Strip trailing slashes without a trailing-repeat regex — `/\/+$/` is
+    // polynomial on slash-heavy input (js/polynomial-redos), and baseUrl is
+    // MCP-client-controlled via the configure tool.
+    let end = raw.length;
+    while (end > 0 && raw[end - 1] === "/") end -= 1;
+    return raw.slice(0, end);
   }
 
   private static initCandidates(config: GitLabConfig): CandidateCredential[] {
