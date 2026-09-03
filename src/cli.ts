@@ -47,6 +47,25 @@ export function resolvePlatform(env: NodeJS.ProcessEnv): Platform {
   return hasGitLab && !hasGitea ? "gitlab" : "gitea";
 }
 
+/**
+ * Parse the optional `MCP_TOOL_ALLOWLIST` env var into the tool-name list
+ * passed to `runServer`/`createServer`. Unset, empty, or whitespace-only
+ * values (and values whose every entry is blank after trimming) leave the
+ * gate off and return `undefined`; otherwise entries are split on commas and
+ * trimmed. Matching against the registered tool names of the active platform
+ * happens in server.ts — an entry naming no such tool is a fatal startup
+ * error there, following the `resolvePlatform` precedent.
+ */
+export function resolveToolAllowlist(env: NodeJS.ProcessEnv): string[] | undefined {
+  const raw = env.MCP_TOOL_ALLOWLIST;
+  if (raw === undefined) return undefined;
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return entries.length > 0 ? entries : undefined;
+}
+
 const argv = process.argv.slice(2);
 const head = argv[0];
 
@@ -97,6 +116,10 @@ if (head === "init") {
     console.error("Fatal error:", err);
     process.exit(1);
   };
+  // Startup tool allowlist: parsed once here (env wiring is this file's role)
+  // and enforced in server.ts at the registration layer. `undefined` means
+  // the gate is off and every tool of the platform stays available.
+  const toolAllowlist = resolveToolAllowlist(process.env);
   const discovered = await (platform === "gitlab" ? discoverGitLabConfig() : discoverConfig()).catch(fatal);
 
   if (!discovered) {
@@ -104,9 +127,9 @@ if (head === "init") {
       `gitea-mcp: starting UNCONFIGURED — no git remote found in ${process.cwd()} and ${platform === "gitlab" ? "GITLAB_BASE_URL" : "GITEA_BASE_URL"} is not set. Use the configure_${platform} tool to configure at runtime.`,
     );
     if (platform === "gitlab") {
-      runServer(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab").catch(fatal);
+      runServer(undefined, undefined, undefined, undefined, undefined, undefined, "gitlab", toolAllowlist).catch(fatal);
     } else {
-      runServer().catch(fatal);
+      runServer(undefined, undefined, undefined, undefined, undefined, undefined, undefined, toolAllowlist).catch(fatal);
     }
   } else if (platform === "gitlab") {
     runServer(
@@ -117,6 +140,7 @@ if (head === "init") {
       undefined,
       discovered.gitAvailable,
       "gitlab",
+      toolAllowlist,
     ).catch(fatal);
   } else {
     runServer(
@@ -126,6 +150,8 @@ if (head === "init") {
       discovered.defaultRepo,
       undefined,
       discovered.gitAvailable,
+      undefined,
+      toolAllowlist,
     ).catch(fatal);
   }
 }

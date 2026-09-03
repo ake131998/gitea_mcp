@@ -84,7 +84,7 @@ node dist/cli.js
 ## 配置
 
 所有变量都是可选的——`gitea-mcp` 会从项目本地 git 配置自动发现 Gitea 实例、仓库和令牌，
-因此一次全局安装即可服务多个项目。仅在需要覆盖自动发现结果时才设置它们。
+因此一次全局安装即可服务多个项目。仅在需要覆盖自动发现结果或限制工具面时才设置它们。
 
 | 变量 | 必填 | 说明 |
 |------|:----:|------|
@@ -94,6 +94,7 @@ node dist/cli.js
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
 | `GITEA_UPLOAD_ROOT` | 否 | 附件上传（`create_issue_attachment` / `create_issue_comment_attachment`）允许读取的根目录。默认为服务器工作目录；解析后的路径必须位于该根目录内。 |
 | `MCP_PLATFORM` | 否 | 当前服务进程服务的平台：`gitea`（默认）或 `gitlab`。设置后优先于 [GitLab 支持](#gitlab-支持)中描述的自动判定。 |
+| `MCP_TOOL_ALLOWLIST` | 否 | 服务器允许暴露的工具名列表，逗号分隔的 `snake_case` 名称（条目去除首尾空白后精确匹配）。未设置或为空时所有工具可用；条目在当前平台上没有对应工具时启动即报 `Fatal error` 退出。 |
 | `GITLAB_BASE_URL` | 否 | GitLab 实例地址（如 `https://gitlab.example.com`）。未设置时从项目 git 远程地址自动推导；其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
 | `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
 | `GITLAB_DEFAULT_OWNER` | 否 | 默认项目所有者（GitLab 模式），免去每次传入 `owner` 参数 |

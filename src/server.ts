@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { GiteaClient } from "./gitea-client.js";
@@ -254,11 +254,12 @@ export interface ServerDeps {
 
 /**
  * The hosting platform this server process serves. One process serves one
- * platform: `server.ts` wires the same 68 shared business tools onto either
- * `GiteaClient` or `GitLabClient`, plus that platform's configure/status
- * diagnostic pair (`configure_gitea`+`gitea_status` vs
- * `configure_gitlab`+`gitlab_status`). Running both platforms means running
- * two server instances (two MCP client entries).
+ * platform: `server.ts` wires the same 70 shared tools (68 business tools
+ * plus `resolve_repo` and `list_my_repos`) onto either `GiteaClient` or
+ * `GitLabClient`, plus that platform's configure/status diagnostic pair
+ * (`configure_gitea`+`gitea_status` vs `configure_gitlab`+`gitlab_status`).
+ * Running both platforms means running two server instances (two MCP client
+ * entries).
  */
 export type Platform = "gitea" | "gitlab";
 
@@ -270,6 +271,7 @@ export async function createServer(
   deps?: ServerDeps,
   gitAvailable?: boolean,
   platform: Platform = "gitea",
+  toolAllowlist?: string[],
 ) {
   const client: GiteaClient | GitLabClient =
     platform === "gitlab"
@@ -1986,6 +1988,36 @@ export async function createServer(
     },
   );
 
+  // ── Startup tool allowlist (MCP_TOOL_ALLOWLIST, enforced at registration) ──
+  //
+  // With an allowlist, non-whitelisted tools are disabled on their
+  // RegisteredTool handles: the SDK filters `enabled === false` tools out of
+  // `tools/list` and rejects their invocation with a tool-level error result,
+  // while registration itself (schemas, descriptions) stays intact. Entries
+  // are matched exactly and case-sensitively against the registered names on
+  // the active platform; an entry naming no such tool is a fatal startup
+  // error (surfaced by cli.ts as `Fatal error:` + exit 1). This runs before
+  // runServer calls connect(), so the per-disable tools/list_changed
+  // notifications never fire on a live session.
+  if (toolAllowlist !== undefined) {
+    const registeredTools = (
+      server as unknown as { _registeredTools: Record<string, RegisteredTool> }
+    )._registeredTools;
+    // Entries are trimmed again here so direct programmatic callers get the
+    // same tolerance the CLI parser applies to the raw env value.
+    const entries = toolAllowlist.map((name) => name.trim());
+    const unknown = entries.filter((name) => !(name in registeredTools));
+    if (unknown.length > 0) {
+      throw new Error(
+        `Invalid MCP_TOOL_ALLOWLIST entry '${unknown[0]}': not a tool on the ${platform} platform.`,
+      );
+    }
+    const allowSet = new Set(entries);
+    for (const [name, tool] of Object.entries(registeredTools)) {
+      if (!allowSet.has(name)) tool.disable();
+    }
+  }
+
   return server;
 }
 
@@ -1997,8 +2029,18 @@ export async function runServer(
   deps?: ServerDeps,
   gitAvailable?: boolean,
   platform: Platform = "gitea",
+  toolAllowlist?: string[],
 ) {
-  const server = await createServer(baseUrl, candidates, defaultOwner, defaultRepo, deps, gitAvailable, platform);
+  const server = await createServer(
+    baseUrl,
+    candidates,
+    defaultOwner,
+    defaultRepo,
+    deps,
+    gitAvailable,
+    platform,
+    toolAllowlist,
+  );
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

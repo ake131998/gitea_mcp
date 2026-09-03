@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { GiteaClient } from "../gitea-client.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtemp, mkdir, writeFile, symlink, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,11 +66,20 @@ let mockClient: MockClient;
 
 interface RegisteredTool {
   description: string;
+  enabled: boolean;
   handler: (input: Record<string, unknown>) => Promise<{ content: { type: string; text: string }[] }>;
 }
 
 function registeredTools(server: { _registeredTools: Record<string, RegisteredTool> }) {
   return server._registeredTools;
+}
+
+/** Sorted names of the tools that are currently enabled (not allowlist-disabled). */
+function enabledToolNames(server: unknown): string[] {
+  return Object.entries(registeredTools(server as never))
+    .filter(([, tool]) => tool.enabled)
+    .map(([name]) => name)
+    .sort();
 }
 
 // Real temp-dir upload root for the attachment-confinement tests. The
@@ -134,6 +145,99 @@ describe("createServer", () => {
       expect(typeof tool.description).toBe("string");
       expect(tool.description.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("startup tool allowlist", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockClient = {};
+    for (const m of CLIENT_METHODS) mockClient[m] = vi.fn();
+    vi.mocked(GiteaClient).mockImplementation(function () { return mockClient; } as never);
+  });
+
+  it("leaves every tool enabled when the allowlist is unset", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g");
+    expect(enabledToolNames(server)).toEqual([...EXPECTED_TOOLS].sort());
+  });
+
+  it("keeps only the whitelisted tool enabled (single entry)", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, undefined, undefined, undefined, undefined, "gitea", [
+      "list_issues",
+    ]);
+    expect(enabledToolNames(server)).toEqual(["list_issues"]);
+    // A whitelisted tool keeps working end to end through its handler.
+    mockClient.listIssues.mockResolvedValue([]);
+    await registeredTools(server as never)["list_issues"].handler({ owner: "o", repo: "r" });
+    expect(mockClient.listIssues).toHaveBeenCalled();
+  });
+
+  it("trims entries and keeps only the whitelisted tools enabled (multi entry)", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, undefined, undefined, undefined, undefined, "gitea", [
+      "list_issues",
+      " get_issue  ",
+    ]);
+    expect(enabledToolNames(server)).toEqual(["get_issue", "list_issues"]);
+  });
+
+  it("rejects an entry that names no tool on the platform", async () => {
+    const { createServer } = await import("../server.js");
+    await expect(
+      createServer("https://g", undefined, undefined, undefined, undefined, undefined, "gitea", ["no_such_tool"]),
+    ).rejects.toThrow("Invalid MCP_TOOL_ALLOWLIST entry 'no_such_tool': not a tool on the gitea platform.");
+  });
+
+  it("rejects a platform-wrong entry (gitlab_status on the gitea platform)", async () => {
+    const { createServer } = await import("../server.js");
+    await expect(
+      createServer("https://g", undefined, undefined, undefined, undefined, undefined, "gitea", ["gitlab_status"]),
+    ).rejects.toThrow("Invalid MCP_TOOL_ALLOWLIST entry 'gitlab_status': not a tool on the gitea platform.");
+  });
+
+  it("rejects every entry when the whole allowlist is platform-wrong, before disabling anything", async () => {
+    const { createServer } = await import("../server.js");
+    await expect(
+      createServer("https://g", undefined, undefined, undefined, undefined, undefined, "gitea", [
+        "list_issues",
+        "gitlab_status",
+      ]),
+    ).rejects.toThrow("Invalid MCP_TOOL_ALLOWLIST entry 'gitlab_status'");
+  });
+
+  it("tools/list advertises exactly the whitelisted tools and whitelisted calls execute", async () => {
+    const { createServer } = await import("../server.js");
+    mockClient.listIssues.mockResolvedValue([]);
+    const server = await createServer("https://g", undefined, "o", "r", undefined, undefined, "gitea", [
+      "list_issues",
+      "get_issue",
+    ]);
+    const client = new Client({ name: "allowlist-test", version: "1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(clientTransport), client.connect(serverTransport)]);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual(["get_issue", "list_issues"]);
+    const result = await client.callTool({ name: "list_issues", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(mockClient.listIssues).toHaveBeenCalled();
+    await client.close();
+  });
+
+  it("tools/call on a non-whitelisted tool returns an isError result without executing the handler", async () => {
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g", undefined, "o", "r", undefined, undefined, "gitea", [
+      "list_issues",
+    ]);
+    const client = new Client({ name: "allowlist-test", version: "1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(clientTransport), client.connect(serverTransport)]);
+    const result = await client.callTool({ name: "delete_issue", arguments: { owner: "o", repo: "r", index: 1 } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("disabled");
+    expect(mockClient.deleteIssue).not.toHaveBeenCalled();
+    await client.close();
   });
 });
 
