@@ -227,6 +227,15 @@ describe("readGitRemotes", () => {
     expect(readGitRemotes(content)).toEqual([{ name: "origin", url: "https://h/o/r.git" }]);
   });
 
+  it("skips non-url keys that appear before the url of a remote", () => {
+    const content = [
+      '[remote "origin"]',
+      "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+      "\turl = https://h/o/r.git",
+    ].join("\n");
+    expect(readGitRemotes(content)).toEqual([{ name: "origin", url: "https://h/o/r.git" }]);
+  });
+
   it("stops collecting keys when a new non-remote section begins", () => {
     const content = [
       '[remote "origin"]',
@@ -1094,6 +1103,25 @@ describe("repo URL connection source (GITEA_REPO_URL / GITLAB_REPO_URL)", () => 
       env: { GITEA_REPO_URL: "https://alice:s3cret@gitea.example/owner/repo.git" },
     });
     expect(candidates).toEqual([]);
+  });
+
+  it("yields no repo-url candidate when the URL carries no credential (connection info only)", async () => {
+    mockFiles({});
+    mockGit({ configToken: null, fill: null });
+    // A credential-less URL still decides the connection (baseUrl/owner/repo
+    // tier above the git remote), but there is no secret in it to try — the
+    // source contributes no candidate while config/env/fill stay empty too.
+    const cfg = await discoverConfig({
+      cwd: "/repo",
+      env: { GITEA_REPO_URL: "https://gitea.example/owner/repo.git" },
+    });
+    expect(cfg).toMatchObject({
+      baseUrl: "https://gitea.example",
+      defaultOwner: "owner",
+      defaultRepo: "repo",
+      gitAvailable: true,
+    });
+    expect(cfg!.candidates).toEqual([]);
   });
 
   it("lets GITEA_DEFAULT_OWNER/REPO override the repo URL's path", async () => {
