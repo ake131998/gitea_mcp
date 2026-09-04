@@ -44,7 +44,7 @@
 ## 环境要求
 
 - **Node.js ≥ 24** —— 使用全局 `fetch`
-- **git ≥ 2.46**（在 `PATH` 上）—— 用于凭据发现（`git config get` / `git credential fill`；`git credential fill` 同时支持所有已配置的凭据 helper，含 OS 钥匙串）。git 完全不可用时，发现降级为仅 `GITEA_TOKEN` / 匿名模式——`gitea_status` 会报告 `gitAvailable: false`。git < 2.46 时，`.git/config [gitea]` 令牌来源会静默失效（退出码不可区分）；凭据 helper 与 `GITEA_TOKEN` 仍可用。
+- **git ≥ 2.46**（在 `PATH` 上）—— 用于凭据发现（`git config get` / `git credential fill`；`git credential fill` 同时支持所有已配置的凭据 helper，含 OS 钥匙串）。git 完全不可用时，发现降级为仅环境变量来源（`GITEA_REPO_URL` / `GITEA_TOKEN`）/ 匿名模式——`gitea_status` 会报告 `gitAvailable: false`。git < 2.46 时，`.git/config [gitea]` 令牌来源会静默失效（退出码不可区分）；凭据 helper 与环境变量来源仍可用。
 - 一个可通过 HTTP 访问的 **Gitea 实例**（自托管或 Gitea Cloud）
 - 一个 **Gitea API 令牌**（或一条 git 凭据），用于读取公开仓库以外的操作
 
@@ -89,14 +89,16 @@ node dist/cli.js
 | 变量 | 必填 | 说明 |
 |------|:----:|------|
 | `GITEA_BASE_URL` | 否 | Gitea 实例地址（如 `https://gitea.example.com`）。未设置时从项目 git 远程地址自动推导。 |
-| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `.git/config [gitea]` 令牌之后、git 凭据机制之前（见[令牌发现](#令牌发现)）。 |
+| `GITEA_TOKEN` | 否 | Gitea API 访问令牌。是多个认证候选之一；排在 `GITEA_REPO_URL` userinfo 与 `.git/config [gitea]` 令牌之后、git 凭据机制之前（见[令牌发现](#令牌发现)）。 |
+| `GITEA_REPO_URL` | 否 | 一个自包含的带凭据克隆地址——`https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`——用单个变量同时提供实例地址、默认 owner/repo 和一个认证候选。各部分分别位于其显式覆盖变量（`GITEA_BASE_URL`、`GITEA_DEFAULT_OWNER`、`GITEA_DEFAULT_REPO`）之下、git 远程之上；纯内存解析，git 不可用时同样生效，内嵌密钥绝不会出现在任何输出中。 |
 | `GITEA_DEFAULT_OWNER` | 否 | 默认仓库所有者，免去每次传入 `owner` 参数 |
 | `GITEA_DEFAULT_REPO` | 否 | 默认仓库名称，免去每次传入 `repo` 参数 |
 | `GITEA_UPLOAD_ROOT` | 否 | 附件上传（`create_issue_attachment` / `create_issue_comment_attachment`）允许读取的根目录。默认为服务器工作目录；解析后的路径必须位于该根目录内。 |
 | `MCP_PLATFORM` | 否 | 当前服务进程服务的平台：`gitea`（默认）或 `gitlab`。设置后优先于 [GitLab 支持](#gitlab-支持)中描述的自动判定。 |
 | `MCP_TOOL_ALLOWLIST` | 否 | 服务器允许暴露的工具名列表，逗号分隔的 `snake_case` 名称（条目去除首尾空白后精确匹配）。未设置或为空时所有工具可用；条目在当前平台上没有对应工具时启动即报 `Fatal error` 退出。 |
 | `GITLAB_BASE_URL` | 否 | GitLab 实例地址（如 `https://gitlab.example.com`）。未设置时从项目 git 远程地址自动推导；其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
-| `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
+| `GITLAB_TOKEN` | 否 | GitLab API 访问令牌。是多个认证候选之一；排在 `GITLAB_REPO_URL` userinfo 与 `.git/config [gitlab]` 令牌之后、git 凭据机制之前。始终以 `Authorization: Bearer <token>` 头发送。 |
+| `GITLAB_REPO_URL` | 否 | `GITEA_REPO_URL` 的 GitLab 对应变量——一个带凭据的克隆地址，同时提供实例地址、默认 owner/project 和一个 `Bearer` 认证候选。其存在（且无 `GITEA_*` 连接变量）会选定 GitLab 模式。 |
 | `GITLAB_DEFAULT_OWNER` | 否 | 默认项目所有者（GitLab 模式），免去每次传入 `owner` 参数 |
 | `GITLAB_DEFAULT_REPO` | 否 | 默认项目名称（GitLab 模式），免去每次传入 `repo` 参数 |
 
@@ -107,13 +109,14 @@ node dist/cli.js
 按下述规则选定：
 
 1. 设置了 `MCP_PLATFORM=gitlab`（或 `gitea`）时以其为准；
-2. 否则，当设置了 `GITLAB_BASE_URL` 或 `GITLAB_TOKEN` 且未设置任何 `GITEA_*` 连接
-   变量时，自动选定 GitLab；
+2. 否则，当设置了 `GITLAB_BASE_URL`、`GITLAB_TOKEN` 或 `GITLAB_REPO_URL` 任意其一，
+   且未设置任何 `GITEA_*` 连接变量时，自动选定 GitLab；
 3. 默认仍为 `gitea`（既有配置行为不变）。
 
 GitLab 模式下，相同的 68 个业务工具名运行在 GitLab REST API v4（`/api/v4`）之上，
 并以 `configure_gitlab` / `gitlab_status` 取代 `configure_gitea` / `gitea_status`。
-发现机制与 Gitea 契约一致：git 配置中的 `[gitlab "<baseUrl>"] token`、`GITLAB_TOKEN`
+发现机制与 Gitea 契约一致：`GITLAB_REPO_URL` 仓库地址、git 配置中的
+`[gitlab "<baseUrl>"] token`、`GITLAB_TOKEN`
 以及 `git credential fill`——所有凭据只以 `Authorization: Bearer <token>` 头发送
 （绝不通过 URL 查询参数传递）。
 
@@ -151,25 +154,36 @@ Premium/Ultimate 可用的操作会返回 `GitLabTierError`（都不是原始 AP
 - **远程选择** —— 优先 `upstream`，回退 `origin`，再回退其它远程。两者不同时 `resolve_repo`
   会同时返回。
 
-若当前目录没有 git 远程、且未设置 `GITEA_BASE_URL`，服务器会以**未配置**状态启动——
+`GITEA_REPO_URL`——形如 `https://<user>:<token>@<host>[:<port>]/<owner>/<repo>.git`
+的一个带凭据克隆地址——是上述整条链路的自包含替代：一个变量同时提供实例地址、
+默认 owner/repo 和一个认证候选（纯内存解析，git 不可用时同样生效）。其各部分
+位于显式覆盖变量 `GITEA_BASE_URL` / `GITEA_DEFAULT_OWNER` / `GITEA_DEFAULT_REPO`
+之下、git 远程之上；原始地址绝不会被回显——`resolve_repo` 会对报告的远程地址
+剥离内嵌的 userinfo。
+
+若当前目录没有 git 远程、且未设置 `GITEA_BASE_URL` 或 `GITEA_REPO_URL`，服务器会
+以**未配置**状态启动——
 `tools/list` 完全可用，但业务工具调用时返回 `NotConfiguredError`。使用 `configure_gitea`
 工具在运行时配置连接（仅当前会话，不持久化），或在克隆的 Gitea 仓库内运行，或显式设置
 `GITEA_BASE_URL` / `GITEA_TOKEN`。
 
 ### 令牌发现
 
-`gitea-mcp` 从三个来源收集认证**候选**，按以下优先级排序：
+`gitea-mcp` 从四个来源收集认证**候选**，按以下优先级排序：
 
-1. `.git/config` 中的 `[gitea "<baseUrl>"]` 段（不带地址的 `[gitea]` 段作为全局兜底），通过
+1. `GITEA_REPO_URL` 仓库地址——当其 host 与实例一致时，内嵌的 `user:secret` userinfo
+   会成为最高优先级候选，并按与 git 凭据相同的用户名启发式确定尝试顺序（真实用户名
+   先试 `basic`；`oauth2` / `x-oauth-basic` / 令牌写在用户名位置时先试 `token`）。
+2. `.git/config` 中的 `[gitea "<baseUrl>"]` 段（不带地址的 `[gitea]` 段作为全局兜底），通过
    `git config get --url=<baseUrl> gitea.token` 读取：
    ```ini
    [gitea "https://gitea.example.com"]
        token = <your-token>
    ```
    始终以 `Authorization: token <token>` 发送。
-2. `GITEA_TOKEN` 环境变量 —— 同样以 `Authorization: token` 发送。运行时无法使用 `git` 时，
-   这是唯一剩余的令牌来源。
-3. git 自身会为实例 host 使用的凭据，通过 `git credential fill` 获取（配置链 + 凭据 helper——
+3. `GITEA_TOKEN` 环境变量 —— 同样以 `Authorization: token` 发送。运行时无法使用 `git` 时，
+   上述环境变量来源是仅剩的候选。
+4. git 自身会为实例 host 使用的凭据，通过 `git credential fill` 获取（配置链 + 凭据 helper——
    存储文件、OS 钥匙串或你配置的任何 helper）。同一 host 存在多个身份时由 git 选取；
    `configure_gitea` 的 `username` 可将查找收窄到该身份。
 
@@ -455,7 +469,7 @@ gitea-mcp
 | 工具 | 说明 |
 |------|------|
 | `list_my_repos` | 列出当前用户可访问的仓库 |
-| `resolve_repo` | 从项目 git 远程地址检测 `baseUrl`、`owner`、`repo`（优先 `upstream`，回退 `origin`） |
+| `resolve_repo` | 从项目 git 远程地址检测 `baseUrl`、`owner`、`repo`（优先 `upstream`，回退 `origin`）；回显的远程地址会剥离内嵌的 userinfo |
 | `gitea_status` | 查看认证处理状态 —— active 候选、已耗尽候选、最近一次错误（脱敏；永不暴露密钥） |
 | `configure_gitea` | 在运行时配置 Gitea 连接（仅当前会话，不持久化）。接受 `base_url`、`owner`、`repo`、`username`。提供 `base_url` 或 `username` 会触发从本地来源重新发现凭据——令牌永不通过此工具传递 |
 

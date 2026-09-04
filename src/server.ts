@@ -79,7 +79,7 @@ import {
   ListProjectsSchema,
   GetProjectSchema,
 } from "./tools.js";
-import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost, discoverGitLabCredentialsForHost } from "./git-config.js";
+import { parseRemotes, selectRemote, resolveGitConfigPath, discoverCredentialsForHost, discoverGitLabCredentialsForHost, stripUrlUserInfo } from "./git-config.js";
 import type { DiscoverCredentialsForHostOptions, DiscoverCredentialsForHostResult } from "./git-config.js";
 import type { CandidateCredential } from "./credentials.js";
 
@@ -1500,7 +1500,7 @@ export async function createServer(
     "resolve_repo",
     {
       description:
-        "Detect baseUrl/owner/repo from a git repository's remotes (SSH or HTTPS). Reads `upstream` first, then `origin`, then any other remote; all discovered remotes are returned. `path` defaults to the current directory. Call ONCE at the start of a session to establish owner/repo for later calls instead of guessing. Errors if no parseable remote is found.",
+        "Detect baseUrl/owner/repo from a git repository's remotes (SSH or HTTPS). Reads `upstream` first, then `origin`, then any other remote; all discovered remotes are returned, with userinfo stripped from every echoed URL so a credentialed remote never leaks its secret. `path` defaults to the current directory. Call ONCE at the start of a session to establish owner/repo for later calls instead of guessing. Errors if no parseable remote is found.",
       inputSchema: ResolveRepoSchema.shape,
     },
     async (input) => {
@@ -1517,7 +1517,9 @@ export async function createServer(
       }
       const remotes: Record<string, { baseUrl: string; owner: string; repo: string; url: string }> = {};
       for (const r of parsed) {
-        remotes[r.remote] = { baseUrl: r.baseUrl, owner: r.owner, repo: r.repo, url: r.url };
+        // Redaction: a remote URL may embed `user:token@` credentials — echo
+        // it with the userinfo stripped so the secret never reaches tool output.
+        remotes[r.remote] = { baseUrl: r.baseUrl, owner: r.owner, repo: r.repo, url: stripUrlUserInfo(r.url) };
       }
       return {
         content: [{
@@ -1527,7 +1529,7 @@ export async function createServer(
             owner: selected.owner,
             repo: selected.repo,
             remote: selected.remote,
-            remote_url: selected.url,
+            remote_url: stripUrlUserInfo(selected.url),
             remotes,
           }, null, 2),
         }],
@@ -1652,7 +1654,7 @@ export async function createServer(
       "configure_gitlab",
       {
         description:
-          "Configure the GitLab connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitlab] token, GITLAB_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+          "Configure the GitLab connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing four sources (GITLAB_REPO_URL repo URL, git config [gitlab] token, GITLAB_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
         inputSchema: ConfigureGitlabSchema.shape,
       },
       (input) => configureConnection(input, discoverGitLabCredentialsForHost, "configure_gitlab"),
@@ -1662,7 +1664,7 @@ export async function createServer(
       "gitlab_status",
       {
         description:
-          "Report the resolved GitLab connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITLAB_TOKEN env or anonymous mode remain: install git or set GITLAB_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or GitLabNotConfiguredError to diagnose the connection state. Takes no input.",
+          "Report the resolved GitLab connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITLAB_REPO_URL / GITLAB_TOKEN env or anonymous mode remain: install git or set GITLAB_REPO_URL / GITLAB_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or GitLabNotConfiguredError to diagnose the connection state. Takes no input.",
         inputSchema: GitlabStatusSchema.shape,
       },
       async () => ({
@@ -1674,7 +1676,7 @@ export async function createServer(
       "configure_gitea",
       {
         description:
-          "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing three sources (git config [gitea] token, GITEA_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
+          "Configure the Gitea connection at runtime (session-scoped, never persisted). Accepts base_url, owner, repo, and/or username — at least one is required. Providing base_url or username triggers credential re-discovery from the existing four sources (GITEA_REPO_URL repo URL, git config [gitea] token, GITEA_TOKEN env, git credential helpers). Tokens never pass through this tool; they are always read from the local credential sources. username strictly narrows the git credential lookup to that identity (no fallback to other identities). Use this when the server started unconfigured or when you need to switch instances/identities mid-session.",
         inputSchema: ConfigureGiteaSchema.shape,
       },
       (input) => configureConnection(input, discoverCredentialsForHost, "configure_gitea"),
@@ -1684,7 +1686,7 @@ export async function createServer(
       "gitea_status",
       {
         description:
-          "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITEA_TOKEN env or anonymous mode remain: install git or set GITEA_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
+          "Report the resolved connection and credential state: whether the server is configured, the current baseUrl, every discovered credential candidate (source, schemes, status, masked username, secretPresent boolean), whether the git binary could be used for credential discovery (gitAvailable — false means only GITEA_REPO_URL / GITEA_TOKEN env or anonymous mode remain: install git or set GITEA_REPO_URL / GITEA_TOKEN), and the session-scoped target (owner, repo, username). Secrets are NEVER returned. Use this when a tool returns 401/403 or NotConfiguredError to diagnose the connection state. Takes no input.",
         inputSchema: GiteaStatusSchema.shape,
       },
       async () => ({

@@ -945,6 +945,39 @@ describe("resolve_repo handler", () => {
     restoreReadFile();
   });
 
+  it("strips embedded credentials from echoed remote URLs (leak-path fix)", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      '[remote "origin"]\n\turl = https://alice:s3cret-token@gitea.example/owner/repo.git\n',
+    );
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g");
+    const result = await registeredTools(server as never)["resolve_repo"].handler({ path: "/repo" });
+    const text = result.content[0].text;
+    const parsed = JSON.parse(text) as {
+      remote_url: string;
+      remotes: Record<string, { url: string }>;
+    };
+    // Credentialed remotes are echoed with the userinfo stripped.
+    expect(parsed.remote_url).toBe("https://gitea.example/owner/repo.git");
+    expect(parsed.remotes.origin.url).toBe("https://gitea.example/owner/repo.git");
+    expect(parsed.remotes.origin).toMatchObject({ owner: "owner", repo: "repo" });
+    expect(text).not.toContain("s3cret-token");
+    restoreReadFile();
+  });
+
+  it("strips a token stored in the username position from echoed remote URLs", async () => {
+    vi.mocked(readFile).mockResolvedValue(
+      '[remote "origin"]\n\turl = https://tok123@gitea.example/owner/repo.git\n',
+    );
+    const { createServer } = await import("../server.js");
+    const server = await createServer("https://g");
+    const result = await registeredTools(server as never)["resolve_repo"].handler({ path: "/repo" });
+    const text = result.content[0].text;
+    expect(JSON.parse(text)).toMatchObject({ remote_url: "https://gitea.example/owner/repo.git" });
+    expect(text).not.toContain("tok123");
+    restoreReadFile();
+  });
+
   it("prefers the upstream remote over origin and surfaces both", async () => {
     vi.mocked(readFile).mockResolvedValue(
       '[remote "origin"]\n\turl = https://gitea.example/origin/repo.git\n[remote "upstream"]\n\turl = https://gitea.example/upstream/repo.git\n',

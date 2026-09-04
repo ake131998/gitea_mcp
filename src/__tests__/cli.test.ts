@@ -202,6 +202,10 @@ describe("platform selection", () => {
     delete process.env.MCP_PLATFORM;
     delete process.env.GITLAB_BASE_URL;
     delete process.env.GITLAB_TOKEN;
+    delete process.env.GITLAB_REPO_URL;
+    delete process.env.GITEA_BASE_URL;
+    delete process.env.GITEA_TOKEN;
+    delete process.env.GITEA_REPO_URL;
     process.argv = ["node", "cli.js"];
     exitSpy = vi
       .spyOn(process, "exit")
@@ -290,6 +294,52 @@ describe("platform selection", () => {
     process.env.MCP_PLATFORM = "sourcehut";
     await expect(import("../cli.js")).rejects.toThrow("process.exit(1)");
     expect(errSpy).toHaveBeenCalledWith("Fatal error:", expect.any(Error));
+  });
+
+  it("resolvePlatform recognizes the repo-URL variables on both platforms", async () => {
+    const { resolvePlatform } = await import("../cli.js");
+    expect(resolvePlatform({ GITEA_REPO_URL: "https://u:t@gitea.example/o/r.git" })).toBe("gitea");
+    expect(resolvePlatform({ GITLAB_REPO_URL: "https://u:t@gitlab.example/o/r.git" })).toBe("gitlab");
+    expect(
+      resolvePlatform({ GITLAB_REPO_URL: "https://u:t@gitlab.example/o/r.git", GITEA_TOKEN: "t" }),
+    ).toBe("gitea");
+  });
+
+  it("a GITLAB_REPO_URL-only process auto-selects gitlab and runs the GitLab discovery", async () => {
+    process.env.GITLAB_REPO_URL = "https://u:t@gitlab.example/o/r.git";
+    vi.mocked(discoverGitLabConfig).mockResolvedValue({
+      baseUrl: "https://gitlab.example",
+      candidates: [
+        { source: "repo-url", secret: "t", schemes: ["bearer"], status: "pending", nextSchemeIndex: 0 },
+      ],
+      defaultOwner: "o",
+      defaultRepo: "r",
+      gitAvailable: true,
+    });
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(
+        "https://gitlab.example",
+        [{ source: "repo-url", secret: "t", schemes: ["bearer"], status: "pending", nextSchemeIndex: 0 }],
+        "o",
+        "r",
+        undefined,
+        true,
+        "gitlab",
+        undefined,
+      );
+    });
+    expect(discoverConfig).not.toHaveBeenCalled();
+  });
+
+  it("the unconfigured notice names the platform's BASE_URL and REPO_URL variables", async () => {
+    vi.mocked(discoverConfig).mockResolvedValue(null);
+    await import("../cli.js");
+    await vi.waitFor(() => {
+      expect(runServer).toHaveBeenCalledWith(undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined);
+    });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("GITEA_BASE_URL"));
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("GITEA_REPO_URL"));
   });
 });
 
