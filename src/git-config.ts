@@ -471,10 +471,12 @@ export function parseRepoUrl(raw: string): ParsedRepoUrl | null {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
 
   // Exactly `<owner>/<repo>[.git]` — deeper paths are not a Gitea repo URL.
+  // The length guard above makes both indices present, so no `?? ""` fallback
+  // is needed (a dead coalescing branch would be uncoverable).
   const segments = parsed.pathname.split("/").filter(Boolean);
   if (segments.length !== 2) return null;
-  const owner = sanitizeSegment(segments[0] ?? "");
-  const repo = sanitizeSegment((segments[1] ?? "").replace(/\.git$/, ""));
+  const owner = sanitizeSegment(segments[0]);
+  const repo = sanitizeSegment(segments[1].replace(/\.git$/, ""));
   if (!owner || !repo) return null;
 
   // URL keeps userinfo percent-encoded; the secret must be the literal value
